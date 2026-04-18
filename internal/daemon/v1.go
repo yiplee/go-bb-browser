@@ -55,16 +55,7 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handleTabList(w http.ResponseWriter, req protocol.V1Request) {
-	tab := strings.TrimSpace(req.Tab)
-	if tab == "" {
-		s.writeV1Error(w, http.StatusBadRequest, protocol.V1Error{
-			Error:  "missing tab",
-			Action: req.Action,
-			Hint:   `tab_list requires "tab": use the short id from tab_new or another tab-scoped response`,
-		})
-		return
-	}
+func (s *Server) handleTabList(w http.ResponseWriter, _ protocol.V1Request) {
 	conn := s.tabConn()
 	if conn == nil {
 		s.writeV1Error(w, http.StatusServiceUnavailable, protocol.V1Error{
@@ -82,14 +73,6 @@ func (s *Server) handleTabList(w http.ResponseWriter, req protocol.V1Request) {
 		return
 	}
 	snaps := s.tabs.SyncPageTargets(targets)
-	if _, ok := s.tabs.Lookup(tab); !ok {
-		s.writeV1Error(w, http.StatusBadRequest, protocol.V1Error{
-			Error:  "unknown tab id",
-			Action: req.Action,
-			Hint:   "invalid or stale tab short id",
-		})
-		return
-	}
 	sort.Slice(snaps, func(i, j int) bool {
 		return snaps[i].ShortID < snaps[j].ShortID
 	})
@@ -101,12 +84,25 @@ func (s *Server) handleTabList(w http.ResponseWriter, req protocol.V1Request) {
 			URL:   sn.URL,
 		})
 	}
+	focus := s.tabs.Selected()
+	var tabField string
+	if focus != "" {
+		for _, sn := range snaps {
+			if sn.ShortID == focus {
+				tabField = focus
+				break
+			}
+		}
+	}
+	if tabField == "" && len(snaps) > 0 {
+		tabField = snaps[0].ShortID
+	}
 	seq := s.seq.Next()
 	body := protocol.TabListOK{
-		Tab:   tab,
+		Tab:   tabField,
 		Seq:   seq,
 		Tabs:  items,
-		Focus: s.tabs.Selected(),
+		Focus: focus,
 	}
 	b, err := protocol.MarshalTabList(body)
 	if err != nil {

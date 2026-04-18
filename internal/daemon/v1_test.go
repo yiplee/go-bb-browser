@@ -65,7 +65,7 @@ func (f *fakeConn) Navigate(tabID target.ID, url string) error {
 	return f.navigateErr
 }
 
-func TestV1TabListRequiresTabAndReturnsContextTab(t *testing.T) {
+func TestV1TabListWithoutTabParam(t *testing.T) {
 	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0"}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
@@ -75,7 +75,7 @@ func TestV1TabListRequiresTabAndReturnsContextTab(t *testing.T) {
 		{TargetID: "ABCDEF123456", Type: "page", Title: "t", URL: "https://ex"},
 	}}
 
-	body := bytes.NewBufferString(`{"action":"tab_list","tab":"3456"}`)
+	body := bytes.NewBufferString(`{"action":"tab_list"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1", body)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
@@ -90,26 +90,10 @@ func TestV1TabListRequiresTabAndReturnsContextTab(t *testing.T) {
 		t.Fatalf("seq %d want 1", got.Seq)
 	}
 	if got.Tab != "3456" {
-		t.Fatalf("context tab %q want 3456", got.Tab)
+		t.Fatalf("tab %q want 3456 (first when no focus)", got.Tab)
 	}
 	if len(got.Tabs) != 1 || got.Tabs[0].Tab != "3456" {
 		t.Fatalf("tabs %#v", got.Tabs)
-	}
-}
-
-func TestV1TabListMissingTab(t *testing.T) {
-	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0"}
-	if err := cfg.Validate(); err != nil {
-		t.Fatal(err)
-	}
-	srv := NewServer(cfg, nil)
-	srv.tabHook = &fakeConn{infos: []*target.Info{
-		{TargetID: "ABCDEF123456", Type: "page"},
-	}}
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1", bytes.NewBufferString(`{"action":"tab_list"}`)))
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status %d", rec.Code)
 	}
 }
 
@@ -210,9 +194,9 @@ func TestV1SeqMonotonicAcrossCalls(t *testing.T) {
 		return seq
 	}
 
-	a := do(`{"action":"tab_list","tab":"3456"}`)
+	a := do(`{"action":"tab_list"}`)
 	b := do(`{"action":"tab_select","tab":"3456"}`)
-	c := do(`{"action":"tab_list","tab":"3456"}`)
+	c := do(`{"action":"tab_list"}`)
 	if !(a < b && b < c) {
 		t.Fatalf("seq not increasing: %d %d %d", a, b, c)
 	}

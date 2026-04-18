@@ -10,7 +10,7 @@ Implementation strategy and milestones are documented in:
 
 1. `tab_new` (optional `"url"` for initial load, e.g. `"about:blank"`) → `{ "tab", "seq" }`
 2. `goto` with `"tab"` + `"url"` → navigate that tab
-3. Other tab-scoped actions carry the same `"tab"` (e.g. `tab_list`, `tab_select`, `tab_close`)
+3. Use `tab_list` with no tab (lists all page targets); other actions need `"tab"` where applicable (`tab_select`, `goto`, `tab_close`)
 4. `tab_close` with `"tab"` when finished
 
 ```bash
@@ -21,7 +21,7 @@ go build -o bb-browserd ./cmd/bb-browserd
 # POST http://127.0.0.1:8787/v1  Content-Type: application/json
 #   {"action":"tab_new","url":"about:blank"}
 #   {"action":"goto","tab":"<short>","url":"https://example.com"}
-#   {"action":"tab_list","tab":"<short>"}
+#   {"action":"tab_list"}
 #   {"action":"tab_close","tab":"<short>"}
 ```
 

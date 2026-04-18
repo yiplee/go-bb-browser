@@ -12,7 +12,7 @@ const (
 )
 
 // V1Request is the JSON envelope for daemon commands.
-// Tab is required for every action that operates in a tab context (tab_list, goto, tab_close, tab_select).
+// Tab is required for goto, tab_close, tab_select; tab_list does not use tab.
 // URL is used by goto (required) and optionally by tab_new (initial navigation URL).
 type V1Request struct {
 	Action string `json:"action"`
@@ -35,9 +35,9 @@ type TabListItem struct {
 }
 
 // TabListOK is the success body for tab_list (INV-1).
-// Tab echoes the request context tab id (must exist).
+// Tab is the focused short id if still present, else the first tab in sorted order; omitted when there are zero tabs.
 type TabListOK struct {
-	Tab   string        `json:"tab"`
+	Tab   string        `json:"tab,omitempty"`
 	Seq   uint64        `json:"seq"`
 	Tabs  []TabListItem `json:"tabs"`
 	Focus string        `json:"focus,omitempty"`
