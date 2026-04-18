@@ -610,7 +610,7 @@ func newObsCmd(use, method, clearMethod, short string) *cobra.Command {
 	return c
 }
 
-func formatObsLine(obsMethod string, data json.RawMessage) string {
+func formatObsLine(_ string, data json.RawMessage) string {
 	var obj map[string]any
 	if err := json.Unmarshal(data, &obj); err != nil {
 		return strings.TrimSpace(string(data))
