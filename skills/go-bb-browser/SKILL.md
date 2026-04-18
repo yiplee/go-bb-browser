@@ -43,10 +43,10 @@ bb-browser site list
 bb-browser site search zhihu
 bb-browser site run platform/command "arg1"
 bb-browser site platform/command "arg1" --flag value   # 省略 run 的简写
-bb-browser site update    # 打印 git clone 说明；仓库落在 ~/.bb-browser/bb-sites
+bb-browser site update    # 打印如何把 bb-sites 放进 ~/.bb-browser/sites
 ```
 
-目录优先级：`~/.bb-browser/sites/`（私有，覆盖同名）→ `~/.bb-browser/bb-sites/`。
+仅扫描 **`~/.bb-browser/sites/`**（递归）；可将社区仓库克隆到该路径下或把 `.js` 放进子目录。
 
 详见 [references/site-system.md](references/site-system.md)。
 

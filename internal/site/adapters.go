@@ -29,39 +29,33 @@ type ArgDef struct {
 
 var metaBlock = regexp.MustCompile(`(?s)/\*\s*@meta\s*(\{.*?\})\s*\*/`)
 
-// Discover scans ~/.bb-browser/sites and ~/.bb-browser/bb-sites (private wins on name).
+// Discover scans only ~/.bb-browser/sites (recursive).
 func Discover() ([]AdapterMeta, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
 	}
-	base := filepath.Join(home, ".bb-browser")
-	dirs := []string{
-		filepath.Join(base, "sites"),
-		filepath.Join(base, "bb-sites"),
-	}
+	dir := filepath.Join(home, ".bb-browser", "sites")
 	byName := make(map[string]AdapterMeta)
-	for _, dir := range dirs {
-		_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
-				return nil
-			}
-			if !strings.HasSuffix(strings.ToLower(path), ".js") {
-				return nil
-			}
-			raw, err := os.ReadFile(path)
-			if err != nil {
-				return nil
-			}
-			m, err := parseMeta(raw)
-			if err != nil || m.Name == "" {
-				return nil
-			}
-			m.Path = path
-			byName[m.Name] = m
+	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
 			return nil
-		})
-	}
+		}
+		if !strings.HasSuffix(strings.ToLower(path), ".js") {
+			return nil
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		m, err := parseMeta(raw)
+		if err != nil || m.Name == "" {
+			return nil
+		}
+		m.Path = path
+		byName[m.Name] = m
+		return nil
+	})
 	out := make([]AdapterMeta, 0, len(byName))
 	for _, m := range byName {
 		out = append(out, m)

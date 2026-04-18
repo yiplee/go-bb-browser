@@ -19,20 +19,19 @@ bb-browser site list
 bb-browser site search <关键词>
 bb-browser site run <name> [位置参数...] [--flag value ...]
 bb-browser site <name> [args...]          # 省略 run
-bb-browser site update                     # 打印 clone epiral/bb-sites 的路径说明
+bb-browser site update                     # 打印如何把 bb-sites 放进 ~/.bb-browser/sites
 ```
 
 ## 目录
 
+仅扫描：
+
 ```
-~/.bb-browser/
-├── sites/           # 私有 adapter（优先级高）
-│   └── platform/command.js
-└── bb-sites/        # 社区仓库克隆（site update / 手动 git clone）
-    └── ...
+~/.bb-browser/sites/
+└── …                    # 任意子目录中的 *.js
 ```
 
-同名 **`name`** 时，**`sites/` 覆盖 `bb-sites/`**。
+可将 [epiral/bb-sites](https://github.com/epiral/bb-sites) **克隆到 `sites/` 下**，或只复制需要的 `.js` 文件。
 
 ## 自动 Tab
 
@@ -58,4 +57,4 @@ adapter 内使用 `async function(args) { ... }` 或等价形式，读取 `args.
 ## 与 bb-sites 的关系
 
 社区仓库：<https://github.com/epiral/bb-sites>  
-将仓库克隆到 `~/.bb-browser/bb-sites` 即可被 `site list` 扫描到。
+克隆到 **`~/.bb-browser/sites`**（例如 `git clone … ~/.bb-browser/sites/bb-sites`）或把其中的 adapter 复制进 `sites/`，即可被 `site list` 发现。

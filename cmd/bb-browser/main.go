@@ -811,12 +811,12 @@ func newNetworkCmd() *cobra.Command {
 func newSiteCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "site",
-		Short: "Discover and run ~/.bb-browser JS adapters (site JSON-RPC via eval)",
+		Short: "Discover and run adapters under ~/.bb-browser/sites (eval JSON-RPC)",
 	}
 
 	list := &cobra.Command{
 		Use:   "list",
-		Short: "List adapters from ~/.bb-browser/sites and bb-sites",
+		Short: "List adapters under ~/.bb-browser/sites",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			all, err := site.Discover()
 			if err != nil {
@@ -948,19 +948,19 @@ func newSiteCmd() *cobra.Command {
 	}
 
 	update := &cobra.Command{
-		Use:   "update [CLONE_PATH]",
-		Short: "Print clone instructions for github.com/epiral/bb-sites",
+		Use:   "update [PATH]",
+		Short: "Print instructions to get epiral/bb-sites into ~/.bb-browser/sites",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			home, err := os.UserHomeDir()
 			if err != nil {
 				return err
 			}
-			dest := filepath.Join(home, ".bb-browser", "bb-sites")
+			dest := filepath.Join(home, ".bb-browser", "sites")
 			if len(args) > 0 && strings.TrimSpace(args[0]) != "" {
 				dest = strings.TrimSpace(args[0])
 			}
-			fmt.Fprintf(os.Stderr, "Clone community adapters:\n  git clone https://github.com/epiral/bb-sites %s\n", dest)
+			fmt.Fprintf(os.Stderr, "Only ~/.bb-browser/sites is scanned. Example:\n  git clone https://github.com/epiral/bb-sites %s\n  # or copy individual .js files into that tree\n", dest)
 			return nil
 		},
 	}

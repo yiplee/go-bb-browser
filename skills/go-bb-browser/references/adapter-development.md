@@ -54,4 +54,4 @@ bb-browser site run demo/test "hello" --json
 
 ## 5. 共享到社区
 
-向 [epiral/bb-sites](https://github.com/epiral/bb-sites) 提 PR；本地也可放在 `~/.bb-browser/bb-sites`。
+向 [epiral/bb-sites](https://github.com/epiral/bb-sites) 提 PR；本地只认 **`~/.bb-browser/sites/`**。
