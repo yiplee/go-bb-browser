@@ -12,20 +12,19 @@
 
 - **人机与 Agent 双场景**：提供可脚本化的 CLI，以及可选的本地 HTTP API（后续可再接 MCP），让 Agent 能控制「已登录的真实浏览器会话」。
 - **语义对齐 bb-browser**：命令/请求模型、响应里的 **`tab` + `seq`**、观察类数据的 **`cursor` + since 过滤**、以及 AGENTS.md 中的 **INV-1～INV-7**。
-- **实现语言**：Go；CDP 客户端：**chromedp**（封装 DevTools Protocol，支持附加到远程调试端口等）。
+- **实现语言**：Go；CDP 客户端：**chromedp**。**daemon 永远不自行启动浏览器**：只通过 CDP **附加到用户已在跑的 Chrome**（典型为已开启 `--remote-debugging-port` 或等价调试端点）。
 
 ### 1.2 非目标（首期可刻意不做）
 
 - **Chrome 扩展**：明确 **不做**。与上游 bb-browser（扩展 + CDP）不同，本项目 **只保留 daemon ↔ Chrome 的 CDP 通路**，不维护扩展、不向浏览器侧注入扩展逻辑。
 - **与上游协议字节级兼容**：优先 **概念与不变量一致**；JSON 字段名可对齐，但若 Go 生态或 CDP 抽象导致差异，在文档与迁移说明中显式列出。
 - **其他浏览器**：明确 **不支持**。实现与文档均假定 **Google Chrome**（chromedp + CDP）；Edge、Firefox、Safari、其他 Chromium 分支不在支持范围内，Issues 可一律关闭为 out of scope。
+- **由 daemon 启动 Chrome 进程**：明确 **不做**。启动带调试端口的 Chrome、选择 profile、传命令行参数等，均由 **用户或外层脚本/安装器** 负责；daemon 只接收 **调试 WebSocket URL**（或 host:port）并连接。
 
 ### 1.3 关键约束（chromedp 视角）
 
-- chromedp 基于 **Chrome DevTools Protocol**，典型用法包括：
-  - 启动带 `--remote-debugging-port` 的浏览器，或
-  - **附加**到已存在的调试端口（保留用户登录态、cookies）。
-- 「用户已打开浏览器」场景下，daemon 应 **连接已有调试端点**，而不是默认再启一个无痕环境（具体启动/附加策略见第 5 节）。
+- chromedp 基于 **Chrome DevTools Protocol**。本项目里 **唯一允许的用法**是：**附加到已存在的调试端点**（例如用户已用 `--remote-debugging-port` 启动 Chrome，daemon 使用 **`chromedp.NewRemoteAllocator`** 连接对应 `ws://…`），以保留登录态、cookies。
+- daemon **不得**使用 **`chromedp.NewExecAllocator`**（或任何会 `exec` 浏览器二进制的路径）作为产品行为；若集成测试需要机器上先有 Chrome，应在测试 harness 里由 **测试脚本** 启动 Chrome，而非 daemon 代码启动。
 
 ---
 
@@ -111,7 +110,7 @@ go-bb-browser/
       server.go          # HTTP server、中间件、鉴权钩子（可选）
       dispatch.go        # action -> handler
     browser/
-      allocator.go       # 连接策略：launcher vs remote allocator
+      remote.go          # 仅 Remote allocator：调试 URL / ws 连接（不启动浏览器）
       pool.go            # chromedp context 池、target attach
       targets.go         # target 发现、切换、关闭
     state/
@@ -134,16 +133,15 @@ go-bb-browser/
 
 ## 5. chromedp 集成策略
 
-### 5.1 Allocator：本地启动 vs 附加已有 Chrome
+### 5.1 Allocator：仅附加已有 Chrome（不启动浏览器）
 
-chromedp 通常通过 **`chromedp.NewExecAllocator`**（启动进程）或 **`chromedp.NewRemoteAllocator`**（连接 `ws://…` / 调试端口）创建 allocator，再 **`chromedp.NewContext`**。
+daemon **只**使用 **`chromedp.NewRemoteAllocator`**，连接到用户已暴露的调试端点（例如从 `http://127.0.0.1:9222/json/version` 取得 `webSocketDebuggerUrl`，或配置里直接提供 `ws://…`），再 **`chromedp.NewContext`**。
 
-计划支持的配置（后续可用配置文件 + flag）：
+| 配置项（示意） | 用途 |
+|----------------|------|
+| **Debugger 地址** | 如 `127.0.0.1:9222` 或完整 WebSocket URL；daemon 启动时必填，连接失败则报错退出或健康检查失败。 |
 
-| 模式 | 用途 | 备注 |
-|------|------|------|
-| **Remote** | 用户已开 Chrome 并启用远程调试 | 与 bb-browser「真实登录态」一致；需文档说明如何加 `--remote-debugging-port`。 |
-| **Exec** | 自动化测试或 CI | 可选用户数据目录以复用 profile。 |
+文档与 `--help` 需说明：**请先自行启动 Chrome 并开启远程调试**（例如 `--remote-debugging-port=9222`，具体以官方文档为准）。CLI 可提供「打印推荐启动命令」类辅助，但 **不负责** `exec` Chrome。
 
 ### 5.2 Target / Tab 模型
 
@@ -253,7 +251,7 @@ CLI 仅是 HTTP 客户端 + 人类可读格式化：
 |------|------|
 | **单元测试** | `ringbuf`、`short id` 碰撞、`seq` 单调性、请求校验。 |
 | **契约测试** | HTTP API  golden JSON（不含环境相关字段）。 |
-| **集成测试**（可选 CI） | headless **Chrome**（或 CI 提供的 Chrome）+ `chromedp` 启动 allocator；远程 attach 测试留本地 manual checklist。 |
+| **集成测试**（可选 CI） | 测试 job 先用 **脚本** 启动带 debugging 的 Chrome，再启动 daemon **仅 Remote attach**；daemon 代码路径不启动浏览器。 |
 
 ---
 
@@ -261,12 +259,12 @@ CLI 仅是 HTTP 客户端 + 人类可读格式化：
 
 ### Phase 0 — 脚手架
 
-- Go module、`cmd` 骨架、配置结构体、静态编译说明。
-- **不接 CDP**：daemon 可先返回 health。
+- Go module、`cmd` 骨架、配置结构体（含 **debugger URL**）、静态编译说明。
+- **不接 CDP**：daemon 可先返回 health（配置项可校验必填）。
 
-### Phase 1 — Remote attach + tab 列表
+### Phase 1 — 附加已有 Chrome + tab 列表
 
-- Remote allocator 连接用户 Chrome。
+- **仅** Remote allocator 连接用户已启动的 Chrome。
 - `tab_list`、`tab_select`（若有）、**短 ID 注册**。
 - **INV 基础单元测试**。
 
@@ -291,7 +289,7 @@ CLI 仅是 HTTP 客户端 + 人类可读格式化：
 
 建议在仓库中维护 `docs/ADR/`（Architecture Decision Records）：
 
-- 选择远程 attach 为默认还是 launch 为默认。
+- **已定**：daemon 不启动浏览器，仅 Remote attach（若需记录在 ADR 里可写 ADR-001）。
 - 每 tab 一个 chromedp context vs 共享 browser context 的取舍。
 - snapshot 的 DOM 表示（纯文本、简化 a11y 树、或 HTML 片段）对 token 体积的影响。
 
@@ -305,4 +303,4 @@ CLI 仅是 HTTP 客户端 + 人类可读格式化：
 
 ---
 
-**结论**：本项目的实现路径是 **先Daemon+状态机+INV 不变量**，再 **chromedp 接通 remote Chrome**，最后补 **观察面与 CLI/MCP**。该顺序能尽早验证「附加真实浏览器」这条核心竞争力，并避免一上来被 UI 细节拖住。
+**结论**：本项目的实现路径是 **先 Daemon + 状态机 + INV 不变量**，再 **chromedp 仅以 Remote 方式接通已在跑的 Chrome**，最后补 **观察面与 CLI/MCP**。浏览器进程生命周期始终在 daemon 外，daemon 只负责 CDP 会话与命令分发。
