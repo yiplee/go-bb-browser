@@ -118,6 +118,16 @@ bb-browser health
 - **无 `trace start/stop`**、**无 `--mcp`**：若需要，应在 go-bb-browser 仓库跟进实现后再更新本 skill。
 - **`network requests --with-body`**：daemon 侧当前以精简字段为主；完整请求/响应体需后续 CDP 增强。
 
+## 深入文档
+
+| 文档 | 说明 |
+|------|------|
+| [references/site-system.md](references/site-system.md) | Site 与 `~/.bb-browser` 目录、自动 tab |
+| [references/adapter-development.md](references/adapter-development.md) | 自定义 adapter、与 `bb-sites` 的关系 |
+| [references/fetch-and-network.md](references/fetch-and-network.md) | `fetch` 与 `network` 子命令、JSON-RPC 对应关系 |
+| [references/snapshot-refs.md](references/snapshot-refs.md) | `@ref` 与 `__bb_snap_ref` |
+| [references/daemon-jsonrpc.md](references/daemon-jsonrpc.md) | `POST /v1` 方法表（Agent 直连） |
+
 ## 仓库内文档
 
 - 实现计划：`docs/IMPLEMENTATION_PLAN.md`
