@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/chromedp/cdproto/cdp"
@@ -28,6 +29,9 @@ const defaultConnectTimeout = 30 * time.Second
 type Session struct {
 	ctx    context.Context
 	cancel context.CancelFunc // cancels chromedp context then allocator
+
+	obsMu     sync.Mutex
+	observers map[target.ID]context.CancelFunc // per-page CDP listener lifetimes
 }
 
 // Connect opens a CDP session to an already-running Chrome instance.
@@ -52,11 +56,25 @@ func Connect(parent context.Context, debuggerURL string) (*Session, error) {
 	return &Session{ctx: ctx, cancel: cancel}, nil
 }
 
-// Close releases the CDP connection.
+// Context returns the browser-level chromedp context (lifetime matches the session).
+func (s *Session) Context() context.Context {
+	if s == nil {
+		return context.Background()
+	}
+	return s.ctx
+}
+
+// Close releases per-tab observers then the CDP connection.
 func (s *Session) Close() {
 	if s == nil || s.cancel == nil {
 		return
 	}
+	s.obsMu.Lock()
+	for _, cancel := range s.observers {
+		cancel()
+	}
+	s.observers = nil
+	s.obsMu.Unlock()
 	s.cancel()
 }
 

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chromedp/cdproto/target"
 	"github.com/yiplee/go-bb-browser/internal/browser"
 	"github.com/yiplee/go-bb-browser/internal/state"
 )
@@ -29,6 +30,9 @@ type Server struct {
 	sessDone func()  // closes remote session on shutdown
 	sessMu   sync.Mutex
 
+	obsStore *state.TabObsStore
+	obsSink  *obsSink
+
 	tabMuOps    sync.Mutex
 	tabCDPLocks map[string]*sync.Mutex // per short tab id
 
@@ -41,14 +45,28 @@ func NewServer(cfg Config, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	obsStore := state.NewTabObsStore()
 	s := &Server{
-		cfg:    cfg,
-		logger: logger,
-		mux:    http.NewServeMux(),
-		tabs:   state.NewTabRegistry(),
+		cfg:      cfg,
+		logger:   logger,
+		mux:      http.NewServeMux(),
+		tabs:     state.NewTabRegistry(),
+		obsStore: obsStore,
 	}
+	s.obsSink = &obsSink{seq: &s.seq, store: obsStore}
 	s.routes()
 	return s
+}
+
+// syncObservation aligns CDP tab observers and clears buffers for removed targets (Phase 3).
+func (s *Server) syncObservation(conn tabConn, infos []*target.Info) {
+	if s.obsStore == nil {
+		return
+	}
+	if sess, ok := conn.(*browser.Session); ok && s.obsSink != nil {
+		sess.SyncObservers(sess.Context(), infos, s.obsSink, s.logger)
+	}
+	s.obsStore.SyncPresence(infos)
 }
 
 func (s *Server) routes() {
@@ -102,6 +120,13 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		s.tabLive = sess
 		s.sessDone = sess.Close
 		s.tabMu.Unlock()
+		targets, terr := sess.PageTargets()
+		if terr != nil {
+			s.logger.Warn("list targets at startup", "err", terr)
+			targets = nil
+		}
+		s.tabs.SyncPageTargets(targets)
+		s.syncObservation(sess, targets)
 		defer func() {
 			s.tabMu.Lock()
 			if s.sessDone != nil {

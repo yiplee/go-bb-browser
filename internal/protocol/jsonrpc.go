@@ -13,6 +13,9 @@ const (
 	MethodEval       = "eval"
 	MethodClick      = "click"
 	MethodFill       = "fill"
+	MethodNetwork    = "network"
+	MethodConsole    = "console"
+	MethodErrors     = "errors"
 )
 
 // Legacy aliases — same values as Method*.
@@ -107,6 +110,12 @@ type FillParams struct {
 	Text     string `json:"text"`
 }
 
+// ObsQueryParams is shared by network / console / errors (INV-2 since filter).
+type ObsQueryParams struct {
+	Tab   string  `json:"tab"`
+	Since *uint64 `json:"since,omitempty"`
+}
+
 // TabListItem is one page target after sync with the browser.
 type TabListItem struct {
 	Tab   string `json:"tab"`
@@ -164,6 +173,21 @@ type ClickResult struct {
 type FillResult struct {
 	Tab string `json:"tab"`
 	Seq uint64 `json:"seq"`
+}
+
+// ObsEvent is one buffered observation (seq-tagged, INV-4).
+type ObsEvent struct {
+	Seq  uint64          `json:"seq"`
+	Data json.RawMessage `json:"data"`
+}
+
+// ObsQueryResult is the payload for network / console / errors queries (INV-1, INV-2).
+type ObsQueryResult struct {
+	Tab     string     `json:"tab"`
+	Seq     uint64     `json:"seq"`
+	Cursor  uint64     `json:"cursor"`
+	Events  []ObsEvent `json:"events"`
+	Dropped uint64     `json:"dropped,omitempty"`
 }
 
 // NormalizeParams returns JSON object bytes for unmarshaling; accepts null / missing.

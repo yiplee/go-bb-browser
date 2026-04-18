@@ -11,6 +11,7 @@ import (
 
 	"github.com/chromedp/cdproto/target"
 	"github.com/yiplee/go-bb-browser/internal/protocol"
+	"github.com/yiplee/go-bb-browser/internal/state"
 )
 
 func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
@@ -69,6 +70,12 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		s.handleClick(w, id, params)
 	case protocol.MethodFill:
 		s.handleFill(w, id, params)
+	case protocol.MethodNetwork:
+		s.handleNetwork(w, id, params)
+	case protocol.MethodConsole:
+		s.handleConsole(w, id, params)
+	case protocol.MethodErrors:
+		s.handleErrors(w, id, params)
 	default:
 		if method == "" {
 			s.rpcErr(w, id, protocol.CodeInvalidRequest, "missing method", nil)
@@ -161,6 +168,7 @@ func (s *Server) handleTabList(w http.ResponseWriter, id json.RawMessage, params
 		Tabs:  items,
 		Focus: focus,
 	})
+	s.syncObservation(conn, targets)
 }
 
 func (s *Server) handleTabSelect(w http.ResponseWriter, id json.RawMessage, params json.RawMessage) {
@@ -229,11 +237,15 @@ func (s *Server) handleTabNew(w http.ResponseWriter, id json.RawMessage, params 
 	}
 	short := s.tabs.RegisterPageTarget(tid)
 	s.tabs.Select(short)
-	if targets, err := conn.PageTargets(); err == nil {
+	targets, ptErr := conn.PageTargets()
+	if ptErr == nil {
 		s.tabs.SyncPageTargets(targets)
 	}
 	seq := s.seq.Next()
 	s.rpcOK(w, id, protocol.TabNewResult{Tab: short, Seq: seq})
+	if ptErr == nil {
+		s.syncObservation(conn, targets)
+	}
 }
 
 func (s *Server) handleGoto(w http.ResponseWriter, id json.RawMessage, params json.RawMessage) {
@@ -339,11 +351,15 @@ func (s *Server) handleTabClose(w http.ResponseWriter, id json.RawMessage, param
 		})
 		return
 	}
-	if targets, err := conn.PageTargets(); err == nil {
+	targets, ptErr := conn.PageTargets()
+	if ptErr == nil {
 		s.tabs.SyncPageTargets(targets)
 	}
 	seq := s.seq.Next()
 	s.rpcOK(w, id, protocol.TabCloseResult{Tab: tab, Seq: seq})
+	if ptErr == nil {
+		s.syncObservation(conn, targets)
+	}
 }
 
 func (s *Server) handleScreenshot(w http.ResponseWriter, id json.RawMessage, params json.RawMessage) {
@@ -493,6 +509,87 @@ func (s *Server) handleClick(w http.ResponseWriter, id json.RawMessage, params j
 	}
 	seq := s.seq.Next()
 	s.rpcOK(w, id, protocol.ClickResult{Tab: tab, Seq: seq})
+}
+
+func obsSince(p *uint64) uint64 {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+func (s *Server) handleNetwork(w http.ResponseWriter, id json.RawMessage, params json.RawMessage) {
+	s.handleObsQuery(w, id, params, protocol.MethodNetwork, func(tid target.ID, since uint64) ([]protocol.ObsEvent, uint64, uint64) {
+		ev, cur, drop := s.obsStore.QueryNetwork(tid, since)
+		return mapObsEvents(ev), cur, drop
+	})
+}
+
+func (s *Server) handleConsole(w http.ResponseWriter, id json.RawMessage, params json.RawMessage) {
+	s.handleObsQuery(w, id, params, protocol.MethodConsole, func(tid target.ID, since uint64) ([]protocol.ObsEvent, uint64, uint64) {
+		ev, cur, drop := s.obsStore.QueryConsole(tid, since)
+		return mapObsEvents(ev), cur, drop
+	})
+}
+
+func (s *Server) handleErrors(w http.ResponseWriter, id json.RawMessage, params json.RawMessage) {
+	s.handleObsQuery(w, id, params, protocol.MethodErrors, func(tid target.ID, since uint64) ([]protocol.ObsEvent, uint64, uint64) {
+		ev, cur, drop := s.obsStore.QueryErrors(tid, since)
+		return mapObsEvents(ev), cur, drop
+	})
+}
+
+func mapObsEvents(in []state.ObsEvent) []protocol.ObsEvent {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]protocol.ObsEvent, len(in))
+	for i, e := range in {
+		out[i] = protocol.ObsEvent{Seq: e.Seq, Data: e.Data}
+	}
+	return out
+}
+
+func (s *Server) handleObsQuery(w http.ResponseWriter, id json.RawMessage, params json.RawMessage, method string, q func(tid target.ID, since uint64) ([]protocol.ObsEvent, uint64, uint64)) {
+	var p protocol.ObsQueryParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "invalid params", nil)
+		return
+	}
+	tab := strings.TrimSpace(p.Tab)
+	if tab == "" {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "missing tab", &protocol.ErrData{
+			Error:  "missing tab",
+			Method: method,
+		})
+		return
+	}
+	conn := s.tabConn()
+	if conn == nil {
+		s.rpcErr(w, id, protocol.CodeServerError, "browser session not ready", nil)
+		return
+	}
+	unlock := s.lockTab(tab)
+	defer unlock()
+	tid, ok := s.resolveTab(conn, tab)
+	if !ok {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "unknown tab id", &protocol.ErrData{
+			Error:  "unknown tab id",
+			Hint:   "invalid or stale tab short id",
+			Method: method,
+		})
+		return
+	}
+	since := obsSince(p.Since)
+	events, cursor, dropped := q(tid, since)
+	seq := s.seq.Next()
+	s.rpcOK(w, id, protocol.ObsQueryResult{
+		Tab:     tab,
+		Seq:     seq,
+		Cursor:  cursor,
+		Events:  events,
+		Dropped: dropped,
+	})
 }
 
 func (s *Server) handleFill(w http.ResponseWriter, id json.RawMessage, params json.RawMessage) {
