@@ -84,6 +84,7 @@ func TestListenAndServeShutdown(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := NewServer(cfg, nil)
+	srv.SkipBrowserAttach = true
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

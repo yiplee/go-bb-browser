@@ -6,13 +6,16 @@ Implementation strategy and milestones are documented in:
 
 - [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md)
 
-**Phase 0 (scaffold):** run the daemon with a debugger endpoint configured (Chrome must be started separately with remote debugging). Example:
+**Phase 0–1:** run the daemon with a debugger endpoint configured (Chrome must be started separately with remote debugging). The daemon attaches over CDP on startup and exposes tab APIs. Example:
 
 ```bash
 go build -o bb-browserd ./cmd/bb-browserd
 ./bb-browserd --debugger-url 127.0.0.1:9222
 # IPv6 loopback also works (bare ::1:9222 is normalized to [::1]:9222)
 # GET http://127.0.0.1:8787/health → {"status":"ok"}
+# POST http://127.0.0.1:8787/v1  Content-Type: application/json
+#   {"action":"tab_list"}
+#   {"action":"tab_select","tab":"<short id from tab_list>"}
 ```
 
-CDP attach and tab APIs are planned for later phases; see `AGENTS.md` for build and test commands.
+See `AGENTS.md` for build and test commands.
