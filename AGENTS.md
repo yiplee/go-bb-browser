@@ -26,4 +26,8 @@ Before implementing handlers, preserve these invariants:
 
 ## When code exists
 
-Record here: build / test / lint commands, module layout, and required **debugger URL / port** for attaching to Chrome the user started (see `IMPLEMENTATION_PLAN.md` §5.1).
+- **Build:** `go build -o bb-browserd ./cmd/bb-browserd`
+- **Test:** `go test ./...`
+- **Daemon:** `bb-browserd` requires `--debugger-url` (or `BB_BROWSER_DEBUGGER_URL`) — e.g. host:port after starting Chrome with remote debugging (`127.0.0.1:9222`). Phase 0 only validates config and serves `GET /health`; CDP attach comes in Phase 1.
+
+Layout: `cmd/bb-browserd` (daemon), `internal/daemon` (HTTP server, config).

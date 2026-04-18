@@ -6,4 +6,12 @@ Implementation strategy and milestones are documented in:
 
 - [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md)
 
-No application code yet — planning phase only.
+**Phase 0 (scaffold):** run the daemon with a debugger endpoint configured (Chrome must be started separately with remote debugging). Example:
+
+```bash
+go build -o bb-browserd ./cmd/bb-browserd
+./bb-browserd --debugger-url 127.0.0.1:9222
+# GET http://127.0.0.1:8787/health → {"status":"ok"}
+```
+
+CDP attach and tab APIs are planned for later phases; see `AGENTS.md` for build and test commands.
