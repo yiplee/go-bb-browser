@@ -10,6 +10,7 @@ import (
 
 	"github.com/chromedp/cdproto/target"
 	"github.com/yiplee/go-bb-browser/internal/protocol"
+	"github.com/yiplee/go-bb-browser/internal/state"
 )
 
 type fakeConn struct {
@@ -65,6 +66,10 @@ func (f *fakeConn) Navigate(tabID target.ID, url string) error {
 	return f.navigateErr
 }
 
+func (f *fakeConn) Reload(target.ID) error {
+	return nil
+}
+
 func (f *fakeConn) Screenshot(target.ID, string) ([]byte, string, error) {
 	return []byte{1, 2, 3}, "image/png", nil
 }
@@ -79,6 +84,10 @@ func (f *fakeConn) Click(target.ID, string) error {
 
 func (f *fakeConn) Fill(target.ID, string, string) error {
 	return nil
+}
+
+func (f *fakeConn) DetectForegroundShort([]state.TabSnapshot) (string, bool) {
+	return "", false
 }
 
 func rpcReq(method string, params any, id any) string {
@@ -132,6 +141,70 @@ func TestV1TabListWithoutTabParam(t *testing.T) {
 	}
 	if len(env.Result.Tabs) != 1 || env.Result.Tabs[0].Tab != "3456" {
 		t.Fatalf("tabs %#v", env.Result.Tabs)
+	}
+}
+
+func TestV1TabFocus(t *testing.T) {
+	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(cfg, nil)
+	srv.tabHook = &fakeConn{infos: []*target.Info{
+		{TargetID: "ABCDEF123456", Type: "page", Title: "t", URL: "https://ex"},
+	}}
+
+	body := bytes.NewBufferString(rpcReq(protocol.MethodTabFocus, map[string]any{}, 1))
+	req := httptest.NewRequest(http.MethodPost, "/v1", body)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var env struct {
+		Result protocol.TabFocusResult `json:"result"`
+		ID     int                     `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.ID != 1 {
+		t.Fatalf("id %d want 1", env.ID)
+	}
+	if env.Result.Seq != 1 {
+		t.Fatalf("seq %d want 1", env.Result.Seq)
+	}
+	if env.Result.Tab != "3456" {
+		t.Fatalf("tab %q want 3456", env.Result.Tab)
+	}
+	if env.Result.Title != "t" || env.Result.URL != "https://ex" {
+		t.Fatalf("meta title=%q url=%q", env.Result.Title, env.Result.URL)
+	}
+}
+
+func TestV1TabFocusNoTabs(t *testing.T) {
+	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(cfg, nil)
+	srv.tabHook = &fakeConn{infos: []*target.Info{}}
+
+	body := bytes.NewBufferString(rpcReq(protocol.MethodTabFocus, map[string]any{}, 1))
+	req := httptest.NewRequest(http.MethodPost, "/v1", body)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	var env struct {
+		Error *protocol.ResponseError `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.Error == nil || env.Error.Code != protocol.CodeInvalidParams {
+		t.Fatalf("got %#v", env.Error)
 	}
 }
 
@@ -207,7 +280,12 @@ func TestV1WorkflowTabNewGotoClose(t *testing.T) {
 		t.Fatalf("goto %d %s", rGoto.Code, rGoto.Body.String())
 	}
 
-	rClose := post(rpcReq(protocol.MethodTabClose, map[string]string{"tab": newEnv.Result.Tab}, 3))
+	rReload := post(rpcReq(protocol.MethodReload, map[string]string{"tab": newEnv.Result.Tab}, 3))
+	if rReload.Code != http.StatusOK {
+		t.Fatalf("reload %d %s", rReload.Code, rReload.Body.String())
+	}
+
+	rClose := post(rpcReq(protocol.MethodTabClose, map[string]string{"tab": newEnv.Result.Tab}, 4))
 	if rClose.Code != http.StatusOK {
 		t.Fatalf("tab_close %d %s", rClose.Code, rClose.Body.String())
 	}

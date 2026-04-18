@@ -61,12 +61,16 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	switch method {
 	case protocol.MethodTabList:
 		s.handleTabList(w, id, params)
+	case protocol.MethodTabFocus:
+		s.handleTabFocus(w, id, params)
 	case protocol.MethodTabSelect:
 		s.handleTabSelect(w, id, params)
 	case protocol.MethodTabNew:
 		s.handleTabNew(w, id, params)
 	case protocol.MethodGoto:
 		s.handleGoto(w, id, params)
+	case protocol.MethodReload:
+		s.handleReload(w, id, params)
 	case protocol.MethodTabClose:
 		s.handleTabClose(w, id, params)
 	case protocol.MethodScreenshot:
@@ -147,6 +151,7 @@ func (s *Server) handleTabList(w http.ResponseWriter, id json.RawMessage, params
 	sort.Slice(snaps, func(i, j int) bool {
 		return snaps[i].ShortID < snaps[j].ShortID
 	})
+	s.syncRegistryFocusFromBrowser(conn, snaps)
 	items := make([]protocol.TabListItem, 0, len(snaps))
 	for _, sn := range snaps {
 		items = append(items, protocol.TabListItem{
@@ -156,18 +161,7 @@ func (s *Server) handleTabList(w http.ResponseWriter, id json.RawMessage, params
 		})
 	}
 	focus := s.tabs.Selected()
-	var tabField string
-	if focus != "" {
-		for _, sn := range snaps {
-			if sn.ShortID == focus {
-				tabField = focus
-				break
-			}
-		}
-	}
-	if tabField == "" && len(snaps) > 0 {
-		tabField = snaps[0].ShortID
-	}
+	tabField := operationalTabShort(s.tabs, snaps)
 	seq := s.seq.Next()
 	s.rpcOK(w, id, protocol.TabListResult{
 		Tab:   tabField,
@@ -176,6 +170,98 @@ func (s *Server) handleTabList(w http.ResponseWriter, id json.RawMessage, params
 		Focus: focus,
 	})
 	s.syncObservation(conn, targets)
+}
+
+func (s *Server) handleTabFocus(w http.ResponseWriter, id json.RawMessage, params json.RawMessage) {
+	var p protocol.TabFocusParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "invalid params", nil)
+		return
+	}
+	_ = p
+
+	conn := s.tabConn()
+	if conn == nil {
+		s.rpcErr(w, id, protocol.CodeServerError, "browser session not ready", nil)
+		return
+	}
+	targets, err := conn.PageTargets()
+	if err != nil {
+		s.logger.Error("tab_focus targets failed", "err", err)
+		s.rpcErr(w, id, protocol.CodeServerError, "failed to list targets", &protocol.ErrData{
+			Error: "failed to list targets",
+			Hint:  s.cdpHint(err),
+		})
+		return
+	}
+	snaps := s.tabs.SyncPageTargets(targets)
+	if len(snaps) == 0 {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "no focused tab", &protocol.ErrData{
+			Error:  "no page tabs",
+			Hint:   "open a tab in Chrome or attach to a session with at least one page target",
+			Method: protocol.MethodTabFocus,
+		})
+		return
+	}
+	sort.Slice(snaps, func(i, j int) bool {
+		return snaps[i].ShortID < snaps[j].ShortID
+	})
+	s.syncRegistryFocusFromBrowser(conn, snaps)
+	focus := s.tabs.Selected()
+	tabField := operationalTabShort(s.tabs, snaps)
+	var title, url string
+	for _, sn := range snaps {
+		if sn.ShortID == tabField {
+			title = sn.Title
+			url = sn.URL
+			break
+		}
+	}
+	seq := s.seq.Next()
+	s.rpcOK(w, id, protocol.TabFocusResult{
+		Tab:   tabField,
+		Focus: focus,
+		Title: title,
+		URL:   url,
+		Seq:   seq,
+	})
+	s.syncObservation(conn, targets)
+}
+
+// syncRegistryFocusFromBrowser updates TabRegistry selection when the browser
+// has exactly one page with document.visibilityState === "visible" (typical
+// single-window foreground tab after the user switches tabs in Chrome).
+func (s *Server) syncRegistryFocusFromBrowser(conn tabConn, snaps []state.TabSnapshot) {
+	if conn == nil || len(snaps) == 0 {
+		return
+	}
+	type foregroundDetector interface {
+		DetectForegroundShort(snaps []state.TabSnapshot) (short string, ok bool)
+	}
+	d, ok := conn.(foregroundDetector)
+	if !ok {
+		return
+	}
+	sh, ok := d.DetectForegroundShort(snaps)
+	if !ok {
+		return
+	}
+	_ = s.tabs.Select(sh)
+}
+
+func operationalTabShort(reg *state.TabRegistry, snaps []state.TabSnapshot) string {
+	if len(snaps) == 0 {
+		return ""
+	}
+	focus := reg.Selected()
+	if focus != "" {
+		for _, sn := range snaps {
+			if sn.ShortID == focus {
+				return focus
+			}
+		}
+	}
+	return snaps[0].ShortID
 }
 
 func (s *Server) handleTabSelect(w http.ResponseWriter, id json.RawMessage, params json.RawMessage) {
@@ -311,6 +397,55 @@ func (s *Server) handleGoto(w http.ResponseWriter, id json.RawMessage, params js
 	}
 	seq := s.seq.Next()
 	s.rpcOK(w, id, protocol.GotoResult{Tab: tab, Seq: seq})
+}
+
+func (s *Server) handleReload(w http.ResponseWriter, id json.RawMessage, params json.RawMessage) {
+	var p protocol.ReloadParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "invalid params", nil)
+		return
+	}
+	tab := strings.TrimSpace(p.Tab)
+	if tab == "" {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "missing tab", &protocol.ErrData{
+			Error:  "missing tab",
+			Hint:   `reload requires "tab"`,
+			Method: protocol.MethodReload,
+		})
+		return
+	}
+	conn := s.tabConn()
+	if conn == nil {
+		s.rpcErr(w, id, protocol.CodeServerError, "browser session not ready", nil)
+		return
+	}
+	unlock := s.lockTab(tab)
+	defer unlock()
+	tid, ok := s.tabs.Lookup(tab)
+	if !ok {
+		if targets, err := conn.PageTargets(); err == nil {
+			s.tabs.SyncPageTargets(targets)
+			tid, ok = s.tabs.Lookup(tab)
+		}
+	}
+	if !ok {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "unknown tab id", &protocol.ErrData{
+			Error:  "unknown tab id",
+			Hint:   "invalid or stale tab short id",
+			Method: protocol.MethodReload,
+		})
+		return
+	}
+	if err := conn.Reload(tid); err != nil {
+		s.logger.Error("reload failed", "err", err)
+		s.rpcErr(w, id, protocol.CodeServerError, "reload failed", &protocol.ErrData{
+			Error: "reload failed",
+			Hint:  s.cdpHint(err),
+		})
+		return
+	}
+	seq := s.seq.Next()
+	s.rpcOK(w, id, protocol.ReloadResult{Tab: tab, Seq: seq})
 }
 
 func (s *Server) handleTabClose(w http.ResponseWriter, id json.RawMessage, params json.RawMessage) {
@@ -674,6 +809,7 @@ type tabConn interface {
 	CreatePageTarget(initialURL string) (target.ID, error)
 	CloseTarget(id target.ID) error
 	Navigate(tabID target.ID, url string) error
+	Reload(tabID target.ID) error
 	Screenshot(tabID target.ID, format string) ([]byte, string, error)
 	Eval(tabID target.ID, script string) (json.RawMessage, error)
 	Click(tabID target.ID, selector string) error

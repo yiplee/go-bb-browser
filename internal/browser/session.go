@@ -14,6 +14,7 @@ import (
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
+	"github.com/yiplee/go-bb-browser/internal/state"
 )
 
 func browserExecutor(ctx context.Context) cdp.Executor {
@@ -226,6 +227,40 @@ func (s *Session) PageTargets() ([]*target.Info, error) {
 	return pages, nil
 }
 
+// DetectForegroundShort returns the short id of the unique page target whose
+// document.visibilityState is "visible". If zero or more than one target
+// qualifies (typical with multiple visible browser windows), it returns "", false.
+func (s *Session) DetectForegroundShort(snaps []state.TabSnapshot) (string, bool) {
+	if s == nil || len(snaps) == 0 {
+		return "", false
+	}
+	var picked string
+	for _, sn := range snaps {
+		if sn.TargetID == "" {
+			continue
+		}
+		tabCtx, err := s.tabChromeCtx(sn.TargetID)
+		if err != nil {
+			continue
+		}
+		var vis string
+		if err := chromedp.Run(tabCtx, chromedp.Evaluate(`document.visibilityState`, &vis)); err != nil {
+			continue
+		}
+		if vis != "visible" {
+			continue
+		}
+		if picked != "" {
+			return "", false
+		}
+		picked = sn.ShortID
+	}
+	if picked == "" {
+		return "", false
+	}
+	return picked, true
+}
+
 func (s *Session) pruneTabPool(present map[target.ID]struct{}) {
 	if s == nil {
 		return
@@ -320,6 +355,18 @@ func (s *Session) Navigate(tabID target.ID, url string) error {
 		return err
 	}
 	return chromedp.Run(tabCtx, chromedp.Navigate(url))
+}
+
+// Reload performs a full navigation reload for the page target.
+func (s *Session) Reload(tabID target.ID) error {
+	if s == nil {
+		return fmt.Errorf("browser session is nil")
+	}
+	tabCtx, err := s.tabChromeCtx(tabID)
+	if err != nil {
+		return err
+	}
+	return chromedp.Run(tabCtx, chromedp.Reload())
 }
 
 // Screenshot captures the viewport; format is "png" (default) or "jpeg".

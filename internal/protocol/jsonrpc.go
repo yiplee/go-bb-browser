@@ -5,9 +5,11 @@ import "encoding/json"
 // JSON-RPC 2.0 method names (same string values as legacy "action" field).
 const (
 	MethodTabList    = "tab_list"
+	MethodTabFocus   = "tab_focus"
 	MethodTabSelect  = "tab_select"
 	MethodTabNew     = "tab_new"
 	MethodGoto       = "goto"
+	MethodReload     = "reload"
 	MethodTabClose   = "tab_close"
 	MethodScreenshot = "screenshot"
 	MethodEval       = "eval"
@@ -21,9 +23,11 @@ const (
 // Legacy aliases — same values as Method*.
 const (
 	ActionTabList   = MethodTabList
+	ActionTabFocus  = MethodTabFocus
 	ActionTabSelect = MethodTabSelect
 	ActionTabNew    = MethodTabNew
 	ActionGoto      = MethodGoto
+	ActionReload    = MethodReload
 	ActionTabClose  = MethodTabClose
 )
 
@@ -72,6 +76,9 @@ type ErrData struct {
 // TabListParams is optional for tab_list (empty object).
 type TabListParams struct{}
 
+// TabFocusParams is optional for tab_focus (empty object).
+type TabFocusParams struct{}
+
 type TabSelectParams struct {
 	Tab string `json:"tab"`
 }
@@ -83,6 +90,10 @@ type TabNewParams struct {
 type GotoParams struct {
 	Tab string `json:"tab"`
 	URL string `json:"url"`
+}
+
+type ReloadParams struct {
+	Tab string `json:"tab"`
 }
 
 type TabCloseParams struct {
@@ -132,6 +143,15 @@ type TabListResult struct {
 	Focus string        `json:"focus,omitempty"`
 }
 
+// TabFocusResult is the focused / operational tab after sync (same `tab` resolution as tab_list).
+type TabFocusResult struct {
+	Tab   string `json:"tab"`
+	Focus string `json:"focus,omitempty"`
+	Title string `json:"title"`
+	URL   string `json:"url"`
+	Seq   uint64 `json:"seq"`
+}
+
 type TabSelectResult struct {
 	Tab string `json:"tab"`
 	Seq uint64 `json:"seq"`
@@ -143,6 +163,11 @@ type TabNewResult struct {
 }
 
 type GotoResult struct {
+	Tab string `json:"tab"`
+	Seq uint64 `json:"seq"`
+}
+
+type ReloadResult struct {
 	Tab string `json:"tab"`
 	Seq uint64 `json:"seq"`
 }
