@@ -4,20 +4,27 @@ import "encoding/json"
 
 // JSON-RPC 2.0 method names (same string values as legacy "action" field).
 const (
-	MethodTabList    = "tab_list"
-	MethodTabFocus   = "tab_focus"
-	MethodTabSelect  = "tab_select"
-	MethodTabNew     = "tab_new"
-	MethodGoto       = "goto"
-	MethodReload     = "reload"
-	MethodTabClose   = "tab_close"
-	MethodScreenshot = "screenshot"
-	MethodEval       = "eval"
-	MethodClick      = "click"
-	MethodFill       = "fill"
-	MethodNetwork    = "network"
-	MethodConsole    = "console"
-	MethodErrors     = "errors"
+	MethodTabList        = "tab_list"
+	MethodTabFocus       = "tab_focus"
+	MethodTabSelect      = "tab_select"
+	MethodTabNew         = "tab_new"
+	MethodGoto           = "goto"
+	MethodReload         = "reload"
+	MethodTabClose       = "tab_close"
+	MethodScreenshot     = "screenshot"
+	MethodEval           = "eval"
+	MethodClick          = "click"
+	MethodFill           = "fill"
+	MethodNetwork        = "network"
+	MethodNetworkClear   = "network_clear"
+	MethodNetworkRoute   = "network_route"
+	MethodNetworkUnroute = "network_unroute"
+	MethodFetch          = "fetch"
+	MethodSnapshot       = "snapshot"
+	MethodConsole        = "console"
+	MethodConsoleClear   = "console_clear"
+	MethodErrors         = "errors"
+	MethodErrorsClear    = "errors_clear"
 )
 
 // Legacy aliases — same values as Method*.
@@ -113,12 +120,63 @@ type EvalParams struct {
 type ClickParams struct {
 	Tab      string `json:"tab"`
 	Selector string `json:"selector"`
+	Ref      string `json:"ref,omitempty"` // numeric id from snapshot (@1 → "1"); expands to __bb_snap_ref selector
 }
 
 type FillParams struct {
 	Tab      string `json:"tab"`
 	Selector string `json:"selector"`
+	Ref      string `json:"ref,omitempty"`
 	Text     string `json:"text"`
+}
+
+// SnapshotParams builds a compact page snapshot with @ref → CSS selector mapping.
+type SnapshotParams struct {
+	Tab             string `json:"tab"`
+	InteractiveOnly bool   `json:"interactive_only,omitempty"`
+	PruneEmpty      bool   `json:"prune_empty,omitempty"`
+	MaxDepth        int    `json:"max_depth,omitempty"` // 0 = unlimited
+	SelectorScope   string `json:"selector_scope,omitempty"`
+}
+
+// FetchParams runs fetch() in the page context (credentials included).
+type FetchParams struct {
+	Tab     string `json:"tab"`
+	URL     string `json:"url"`
+	Method  string `json:"method,omitempty"`
+	Headers string `json:"headers,omitempty"` // JSON object string
+	Body    string `json:"body,omitempty"`
+}
+
+// NetworkRouteParams registers a Fetch interception rule for the tab.
+type NetworkRouteParams struct {
+	Tab         string `json:"tab"`
+	URLPattern  string `json:"url_pattern"`
+	Abort       bool   `json:"abort,omitempty"`
+	Body        string `json:"body,omitempty"` // mock response body (UTF-8); JSON object/array recommended
+	ContentType string `json:"content_type,omitempty"`
+	Status      int    `json:"status,omitempty"` // mock HTTP status (default 200)
+}
+
+// NetworkUnrouteParams removes interception rules.
+type NetworkUnrouteParams struct {
+	Tab        string `json:"tab"`
+	URLPattern string `json:"url_pattern,omitempty"` // empty = remove all rules for tab
+}
+
+// NetworkClearParams clears buffered network observations for a tab (does not affect routes).
+type NetworkClearParams struct {
+	Tab string `json:"tab"`
+}
+
+// ConsoleClearParams clears buffered console messages for a tab.
+type ConsoleClearParams struct {
+	Tab string `json:"tab"`
+}
+
+// ErrorsClearParams clears buffered JS errors / log entries for a tab.
+type ErrorsClearParams struct {
+	Tab string `json:"tab"`
 }
 
 // ObsQueryParams is shared by network / console / errors (INV-2 since filter).
@@ -196,6 +254,50 @@ type ClickResult struct {
 }
 
 type FillResult struct {
+	Tab string `json:"tab"`
+	Seq uint64 `json:"seq"`
+}
+
+type SnapshotResult struct {
+	Tab   string            `json:"tab"`
+	Seq   uint64            `json:"seq"`
+	Title string            `json:"title"`
+	URL   string            `json:"url"`
+	Text  string            `json:"text"`
+	Refs  map[string]string `json:"refs"`
+}
+
+type FetchResult struct {
+	Tab    string          `json:"tab"`
+	Seq    uint64          `json:"seq"`
+	OK     bool            `json:"ok"`
+	Status int             `json:"status"`
+	Result json.RawMessage `json:"result"` // parsed JSON value from script (status, headers, body, …)
+}
+
+type NetworkRouteResult struct {
+	Tab    string `json:"tab"`
+	Seq    uint64 `json:"seq"`
+	Routes int    `json:"routes"`
+}
+
+type NetworkUnrouteResult struct {
+	Tab    string `json:"tab"`
+	Seq    uint64 `json:"seq"`
+	Routes int    `json:"routes"`
+}
+
+type NetworkClearResult struct {
+	Tab string `json:"tab"`
+	Seq uint64 `json:"seq"`
+}
+
+type ConsoleClearResult struct {
+	Tab string `json:"tab"`
+	Seq uint64 `json:"seq"`
+}
+
+type ErrorsClearResult struct {
 	Tab string `json:"tab"`
 	Seq uint64 `json:"seq"`
 }

@@ -12,10 +12,15 @@ import (
 
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/page"
+	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 	"github.com/yiplee/go-bb-browser/internal/state"
 )
+
+func errNilSession() error {
+	return fmt.Errorf("browser session is nil")
+}
 
 func browserExecutor(ctx context.Context) cdp.Executor {
 	c := chromedp.FromContext(ctx)
@@ -30,6 +35,8 @@ func browserExecutor(ctx context.Context) cdp.Executor {
 type Session struct {
 	ctx    context.Context
 	cancel context.CancelFunc // cancels chromedp context then allocator
+
+	routeState *routeState
 
 	obsMu     sync.Mutex
 	observers map[target.ID]context.CancelFunc // per-page CDP listener lifetimes
@@ -270,6 +277,7 @@ func (s *Session) pruneTabPool(present map[target.ID]struct{}) {
 	for id, ent := range s.tabPool {
 		if _, ok := present[id]; !ok {
 			delete(s.tabPool, id)
+			s.ClearRoutesForTarget(id)
 			drop = append(drop, ent.cancel)
 		}
 	}
@@ -398,22 +406,26 @@ func (s *Session) Screenshot(tabID target.ID, format string) ([]byte, string, er
 
 // Eval runs script in the page and returns JSON-marshalable result as RawMessage.
 func (s *Session) Eval(tabID target.ID, script string) (json.RawMessage, error) {
+	return s.EvalAwait(tabID, script, false)
+}
+
+// EvalAwait runs script; when awaitPromise is true, resolves Promises (same as bb-browser fetch).
+func (s *Session) EvalAwait(tabID target.ID, script string, awaitPromise bool) (json.RawMessage, error) {
 	if s == nil {
-		return nil, fmt.Errorf("browser session is nil")
+		return nil, errNilSession()
 	}
 	tabCtx, err := s.tabChromeCtx(tabID)
 	if err != nil {
 		return nil, err
 	}
-	var v interface{}
-	if err := chromedp.Run(tabCtx, chromedp.Evaluate(script, &v)); err != nil {
-		return nil, err
-	}
-	b, err := json.Marshal(v)
+	var raw []byte
+	err = chromedp.Run(tabCtx, chromedp.Evaluate(script, &raw, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
+		return p.WithAwaitPromise(awaitPromise).WithReturnByValue(true)
+	}))
 	if err != nil {
 		return nil, err
 	}
-	return json.RawMessage(b), nil
+	return json.RawMessage(raw), nil
 }
 
 // Click performs a click on the first node matching selector.
