@@ -28,6 +28,6 @@ Before implementing handlers, preserve these invariants:
 
 - **Build:** `go build -o bb-browserd ./cmd/bb-browserd`
 - **Test:** `go test ./...`
-- **Daemon:** `bb-browserd` requires `--debugger-url` (or `BB_BROWSER_DEBUGGER_URL`) — e.g. host:port after starting Chrome with remote debugging (`127.0.0.1:9222`). Phase 0 only validates config and serves `GET /health`; CDP attach comes in Phase 1.
+- **Daemon:** `bb-browserd` requires `--debugger-url` (or `BB_BROWSER_DEBUGGER_URL`) — e.g. host:port after starting Chrome with remote debugging (`127.0.0.1:9222`). On startup it **attaches via chromedp** (`NewRemoteAllocator` only). **`POST /v1`** actions: **`tab_new`** (optional `url`) → returns new short **`tab`**; **`goto`** requires **`tab`** + **`url`**; **`tab_close`** requires **`tab`**; **`tab_select`** requires **`tab`**; **`tab_list`** needs no **`tab`** (lists all targets). Successful operational responses include **`seq`**; **`tab`** is included when applicable (INV-1).
 
-Layout: `cmd/bb-browserd` (daemon), `internal/daemon` (HTTP server, config).
+Layout: `cmd/bb-browserd` (daemon); `internal/daemon` (HTTP server, dispatch); `internal/browser` (remote CDP session); `internal/protocol` (v1 types); `internal/state` (seq, tab registry).
