@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 )
@@ -28,26 +29,43 @@ func NewServer(cfg Config, logger *slog.Logger) *Server {
 }
 
 func (s *Server) routes() {
-	s.mux.HandleFunc("GET /health", s.handleHealth)
+	s.mux.HandleFunc("/health", s.handleHealthRoute)
 }
 
 func (s *Server) Handler() http.Handler {
 	return http.MaxBytesHandler(s.mux, s.cfg.MaxBodyBytes)
 }
 
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+func (s *Server) handleHealthRoute(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		s.handleHealthGet(w, r)
+		return
+	}
+	w.Header().Set("Allow", http.MethodGet)
+	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+}
+
+func (s *Server) handleHealthGet(w http.ResponseWriter, _ *http.Request) {
+	b, err := json.Marshal(map[string]string{"status": "ok"})
+	if err != nil {
+		s.logger.Error("health json encode failed", "err", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	if _, err := w.Write(b); err != nil {
+		s.logger.Error("health response write failed", "err", err)
+	}
 }
 
 // ListenAndServe starts the HTTP server until ctx is cancelled or Listen fails.
 func (s *Server) ListenAndServe(ctx context.Context) error {
+	ln, err := net.Listen("tcp", s.cfg.ListenAddr)
+	if err != nil {
+		return fmt.Errorf("listen: %w", err)
+	}
+
 	srv := &http.Server{
-		Addr:              s.cfg.ListenAddr,
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
@@ -57,8 +75,8 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		s.logger.Info("daemon listening", "addr", s.cfg.ListenAddr, "debugger", s.cfg.DebuggerURL)
-		err := srv.ListenAndServe()
+		s.logger.Info("daemon listening", "addr", ln.Addr().String(), "debugger", s.cfg.DebuggerURL)
+		err := srv.Serve(ln)
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 			return

@@ -19,6 +19,23 @@ func TestConfigValidate_DebuggerWhitespaceTrimmed(t *testing.T) {
 	}
 }
 
+func TestConfigValidate_IPv6BareHostPortNormalized(t *testing.T) {
+	c := Config{DebuggerURL: "::1:9222", ListenAddr: "127.0.0.1:0"}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if want := "[::1]:9222"; c.DebuggerURL != want {
+		t.Fatalf("got %q want %q", c.DebuggerURL, want)
+	}
+}
+
+func TestConfigValidate_InvalidListenAddr(t *testing.T) {
+	c := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "not-a-valid-addr"}
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected error for invalid listen address")
+	}
+}
+
 func TestConfigValidate_DefaultListenAndBodyLimit(t *testing.T) {
 	c := Config{DebuggerURL: "127.0.0.1:9222"}
 	if err := c.Validate(); err != nil {
@@ -35,6 +52,7 @@ func TestConfigValidate_DefaultListenAndBodyLimit(t *testing.T) {
 func TestValidateDebuggerEndpoint(t *testing.T) {
 	for _, raw := range []string{
 		"127.0.0.1:9222",
+		"[::1]:9222",
 		"http://127.0.0.1:9222",
 		"ws://127.0.0.1:9222/devtools/browser/foo",
 	} {

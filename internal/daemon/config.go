@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -35,10 +36,14 @@ func (c *Config) Validate() error {
 	if raw == "" {
 		return fmt.Errorf("debugger URL is required (set --debugger-url or BB_BROWSER_DEBUGGER_URL)")
 	}
-	if err := validateDebuggerEndpoint(raw); err != nil {
+	norm, err := normalizeBareDebuggerHostPort(raw)
+	if err != nil {
 		return err
 	}
-	c.DebuggerURL = raw
+	if err := validateDebuggerEndpoint(norm); err != nil {
+		return err
+	}
+	c.DebuggerURL = norm
 
 	if strings.TrimSpace(c.ListenAddr) == "" {
 		c.ListenAddr = DefaultListenAddr
@@ -50,6 +55,32 @@ func (c *Config) Validate() error {
 		c.MaxBodyBytes = DefaultMaxBodyBytes
 	}
 	return nil
+}
+
+// normalizeBareDebuggerHostPort accepts host:port where the host may be a bare IPv6 literal
+// (e.g. ::1:9222) and canonicalizes it to bracketed form ([::1]:9222) so net.SplitHostPort works.
+// URL forms (containing "://") are returned unchanged.
+func normalizeBareDebuggerHostPort(raw string) (string, error) {
+	if strings.Contains(raw, "://") {
+		return raw, nil
+	}
+	if _, _, err := net.SplitHostPort(raw); err == nil {
+		return raw, nil
+	}
+	idx := strings.LastIndex(raw, ":")
+	if idx <= 0 || idx == len(raw)-1 {
+		return "", fmt.Errorf("invalid debugger endpoint %q: expected host:port or ws/http(s) URL", raw)
+	}
+	hostPart, portPart := raw[:idx], raw[idx+1:]
+	port, err := strconv.ParseUint(portPart, 10, 16)
+	if err != nil || port == 0 {
+		return "", fmt.Errorf("invalid debugger endpoint %q: expected host:port or ws/http(s) URL", raw)
+	}
+	ip := net.ParseIP(hostPart)
+	if ip == nil {
+		return "", fmt.Errorf("invalid debugger endpoint %q: expected host:port or ws/http(s) URL", raw)
+	}
+	return net.JoinHostPort(ip.String(), portPart), nil
 }
 
 func validateDebuggerEndpoint(raw string) error {

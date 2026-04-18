@@ -11,6 +11,7 @@ Implementation strategy and milestones are documented in:
 ```bash
 go build -o bb-browserd ./cmd/bb-browserd
 ./bb-browserd --debugger-url 127.0.0.1:9222
+# IPv6 loopback also works (bare ::1:9222 is normalized to [::1]:9222)
 # GET http://127.0.0.1:8787/health → {"status":"ok"}
 ```
 
