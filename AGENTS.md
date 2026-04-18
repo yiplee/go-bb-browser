@@ -4,7 +4,9 @@ Agent-facing notes for this repository (planning phase).
 
 ## Intent
 
-Mirror the **bb-browser** shape — **CLI → HTTP daemon → browser via CDP** — while implementing in **Go** and using **chromedp** as the CDP client library.
+Mirror the **bb-browser** shape — **CLI → HTTP daemon → Chrome via CDP only** — while implementing in **Go** and using **chromedp** as the CDP client library.
+
+**Scope:** **Google Chrome only**; **no Chrome extension** and **no multi-browser support** — all automation goes through CDP from the daemon.
 
 Upstream reference architecture (TypeScript): CLI and MCP talk HTTP to a daemon; the daemon holds CDP connections, dispatches commands, and maintains per-tab state with ring buffers and a global monotonic `seq`.
 

@@ -1,6 +1,6 @@
 # go-bb-browser 实现计划（设计稿）
 
-本文档描述如何用 **Go** 复刻 **bb-browser** 的分层与行为思想，底层通过 **[chromedp](https://github.com/chromedp/chromedp)** 与浏览器通信。**当前阶段仅规划，不包含业务实现代码。**
+本文档描述如何用 **Go** 复刻 **bb-browser** 的分层与行为思想，底层仅通过 **[chromedp](https://github.com/chromedp/chromedp)**（Chrome DevTools Protocol）与 **Google Chrome** 通信——**不包含 Chrome 扩展**，也**不支持 Chrome 以外的浏览器**。**当前阶段仅规划，不包含业务实现代码。**
 
 参考上游（架构与不变量）：[epiral/bb-browser](https://github.com/epiral/bb-browser) 及其 `AGENTS.md` 中的组件图与设计不变量（短 tab ID、`seq`、环形缓冲等）。
 
@@ -16,9 +16,9 @@
 
 ### 1.2 非目标（首期可刻意不做）
 
-- **Chrome 扩展**：原版通过扩展注入部分能力；Go 版首期以 **纯 CDP** 为主（见第 7 节「能力与缺口」）。
+- **Chrome 扩展**：明确 **不做**。与上游 bb-browser（扩展 + CDP）不同，本项目 **只保留 daemon ↔ Chrome 的 CDP 通路**，不维护扩展、不向浏览器侧注入扩展逻辑。
 - **与上游协议字节级兼容**：优先 **概念与不变量一致**；JSON 字段名可对齐，但若 Go 生态或 CDP 抽象导致差异，在文档与迁移说明中显式列出。
-- **跨浏览器**：首期只考虑 **Chromium 系**（Chrome / Edge Chromium）；Firefox CDP 不在范围。
+- **其他浏览器**：明确 **不支持**。实现与文档均假定 **Google Chrome**（chromedp + CDP）；Edge、Firefox、Safari、其他 Chromium 分支不在支持范围内，Issues 可一律关闭为 out of scope。
 
 ### 1.3 关键约束（chromedp 视角）
 
@@ -205,12 +205,10 @@ chromedp 通常通过 **`chromedp.NewExecAllocator`**（启动进程）或 **`ch
 - Network / Console 的事件订阅与缓冲。
 - 多 tab 管理与附加。
 
-### 7.2 可能需要扩展或二期再做
+### 7.2 可选增强（二期，仍为纯 CDP）
 
-- **站点级「adapter」或注入脚本**：上游若有扩展侧逻辑，Go 版可考虑：
-  - `Page.addScriptToEvaluateOnNewDocument` 注入小型 helper；
-  - 或与独立扩展并存（进程外协议）。
-- **强对抗站点的指纹/真人检测**：真实浏览器 profile + remote attach 仍是核心手段； chromedp 无法控制浏览器以外的系统层行为。
+- **站点级「adapter」或注入脚本**：无需扩展；若需要页面内 helper，仅用 CDP，例如 **`Page.addScriptToEvaluateOnNewDocument`** 注入小型脚本（仍属 daemon 发起的 CDP，不引入扩展）。
+- **强对抗站点的指纹/真人检测**：真实 Chrome profile + remote attach 仍是核心手段；chromedp 无法控制浏览器以外的系统层行为。
 
 ---
 
@@ -255,7 +253,7 @@ CLI 仅是 HTTP 客户端 + 人类可读格式化：
 |------|------|
 | **单元测试** | `ringbuf`、`short id` 碰撞、`seq` 单调性、请求校验。 |
 | **契约测试** | HTTP API  golden JSON（不含环境相关字段）。 |
-| **集成测试**（可选 CI） | headless Chromium + `chromedp` 启动 allocator；远程 attach 测试留本地 manual checklist。 |
+| **集成测试**（可选 CI） | headless **Chrome**（或 CI 提供的 Chrome）+ `chromedp` 启动 allocator；远程 attach 测试留本地 manual checklist。 |
 
 ---
 
