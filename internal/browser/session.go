@@ -2,10 +2,13 @@ package browser
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
@@ -20,7 +23,7 @@ func browserExecutor(ctx context.Context) cdp.Executor {
 
 const defaultConnectTimeout = 30 * time.Second
 
-// Session wraps a chromedp remote allocator + browser context for Phase 1 tab APIs.
+// Session wraps a chromedp remote allocator + browser context for tab-scoped CDP APIs.
 // Only NewRemoteAllocator is used — the daemon never launches Chrome (see IMPLEMENTATION_PLAN §5.1).
 type Session struct {
 	ctx    context.Context
@@ -117,4 +120,71 @@ func (s *Session) Navigate(tabID target.ID, url string) error {
 	tabCtx, cancel := chromedp.NewContext(s.ctx, chromedp.WithTargetID(tabID))
 	defer cancel()
 	return chromedp.Run(tabCtx, chromedp.Navigate(url))
+}
+
+func (s *Session) tabCtx(tabID target.ID) (context.Context, context.CancelFunc) {
+	return chromedp.NewContext(s.ctx, chromedp.WithTargetID(tabID))
+}
+
+// Screenshot captures the viewport; format is "png" (default) or "jpeg".
+func (s *Session) Screenshot(tabID target.ID, format string) ([]byte, string, error) {
+	if s == nil {
+		return nil, "", fmt.Errorf("browser session is nil")
+	}
+	tabCtx, cancel := s.tabCtx(tabID)
+	defer cancel()
+	format = strings.ToLower(strings.TrimSpace(format))
+	if format == "jpeg" || format == "jpg" {
+		var buf []byte
+		err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+			var err error
+			buf, err = page.CaptureScreenshot().
+				WithFormat(page.CaptureScreenshotFormatJpeg).
+				WithQuality(85).
+				Do(ctx)
+			return err
+		}))
+		return buf, "image/jpeg", err
+	}
+	var buf []byte
+	err := chromedp.Run(tabCtx, chromedp.CaptureScreenshot(&buf))
+	return buf, "image/png", err
+}
+
+// Eval runs script in the page and returns JSON-marshalable result as RawMessage.
+func (s *Session) Eval(tabID target.ID, script string) (json.RawMessage, error) {
+	if s == nil {
+		return nil, fmt.Errorf("browser session is nil")
+	}
+	tabCtx, cancel := s.tabCtx(tabID)
+	defer cancel()
+	var v interface{}
+	if err := chromedp.Run(tabCtx, chromedp.Evaluate(script, &v)); err != nil {
+		return nil, err
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(b), nil
+}
+
+// Click performs a click on the first node matching selector.
+func (s *Session) Click(tabID target.ID, selector string) error {
+	if s == nil {
+		return fmt.Errorf("browser session is nil")
+	}
+	tabCtx, cancel := s.tabCtx(tabID)
+	defer cancel()
+	return chromedp.Run(tabCtx, chromedp.Click(selector, chromedp.ByQuery))
+}
+
+// Fill sets the value of an input/textarea (see chromedp.SetValue).
+func (s *Session) Fill(tabID target.ID, selector, text string) error {
+	if s == nil {
+		return fmt.Errorf("browser session is nil")
+	}
+	tabCtx, cancel := s.tabCtx(tabID)
+	defer cancel()
+	return chromedp.Run(tabCtx, chromedp.SetValue(selector, text, chromedp.ByQuery))
 }

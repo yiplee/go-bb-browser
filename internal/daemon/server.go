@@ -15,7 +15,7 @@ import (
 	"github.com/yiplee/go-bb-browser/internal/state"
 )
 
-// Server is the HTTP API front-end for the daemon (Phase 1: CDP attach + tab_list / tab_select).
+// Server is the HTTP API front-end for the daemon (JSON-RPC over POST /v1).
 type Server struct {
 	cfg    Config
 	logger *slog.Logger
@@ -28,6 +28,9 @@ type Server struct {
 	tabHook  tabConn // optional: tests inject fake CDP
 	sessDone func()  // closes remote session on shutdown
 	sessMu   sync.Mutex
+
+	tabMuOps    sync.Mutex
+	tabCDPLocks map[string]*sync.Mutex // per short tab id
 
 	// SkipBrowserAttach skips CDP connect in ListenAndServe (tests without Chrome).
 	SkipBrowserAttach bool
