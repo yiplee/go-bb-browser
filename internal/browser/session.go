@@ -5,9 +5,18 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
+
+func browserExecutor(ctx context.Context) cdp.Executor {
+	c := chromedp.FromContext(ctx)
+	if c == nil || c.Browser == nil {
+		return nil
+	}
+	return c.Browser
+}
 
 const defaultConnectTimeout = 30 * time.Second
 
@@ -70,4 +79,42 @@ func (s *Session) PageTargets() ([]*target.Info, error) {
 		}
 	}
 	return pages, nil
+}
+
+// CreatePageTarget opens a new page target (INV-7: works when zero tabs exist).
+func (s *Session) CreatePageTarget(initialURL string) (target.ID, error) {
+	if s == nil {
+		return "", fmt.Errorf("browser session is nil")
+	}
+	ex := browserExecutor(s.ctx)
+	if ex == nil {
+		return "", fmt.Errorf("browser not available in context")
+	}
+	id, err := target.CreateTarget(initialURL).Do(cdp.WithExecutor(s.ctx, ex))
+	if err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+// CloseTarget closes a page target by CDP id.
+func (s *Session) CloseTarget(id target.ID) error {
+	if s == nil {
+		return fmt.Errorf("browser session is nil")
+	}
+	ex := browserExecutor(s.ctx)
+	if ex == nil {
+		return fmt.Errorf("browser not available in context")
+	}
+	return target.CloseTarget(id).Do(cdp.WithExecutor(s.ctx, ex))
+}
+
+// Navigate navigates the given page target to url.
+func (s *Session) Navigate(tabID target.ID, url string) error {
+	if s == nil {
+		return fmt.Errorf("browser session is nil")
+	}
+	tabCtx, cancel := chromedp.NewContext(s.ctx, chromedp.WithTargetID(tabID))
+	defer cancel()
+	return chromedp.Run(tabCtx, chromedp.Navigate(url))
 }

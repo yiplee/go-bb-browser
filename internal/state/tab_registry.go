@@ -70,6 +70,14 @@ func (r *TabRegistry) SyncPageTargets(infos []*target.Info) []TabSnapshot {
 	return out
 }
 
+// RegisterPageTarget assigns a short id for a CDP target id without syncing from the browser.
+// Use after Target.createTarget when GetTargets may not yet list the new tab.
+func (r *TabRegistry) RegisterPageTarget(id target.ID) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.assignShortLocked(id)
+}
+
 func tabTitle(infos []*target.Info, id target.ID) string {
 	for _, info := range infos {
 		if info != nil && info.TargetID == id {

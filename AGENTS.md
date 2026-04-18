@@ -28,6 +28,6 @@ Before implementing handlers, preserve these invariants:
 
 - **Build:** `go build -o bb-browserd ./cmd/bb-browserd`
 - **Test:** `go test ./...`
-- **Daemon:** `bb-browserd` requires `--debugger-url` (or `BB_BROWSER_DEBUGGER_URL`) — e.g. host:port after starting Chrome with remote debugging (`127.0.0.1:9222`). On startup it **attaches via chromedp** (`NewRemoteAllocator` only). APIs: `GET /health`; `POST /v1` with JSON `{"action":"tab_list"}` or `{"action":"tab_select","tab":"<short>"}`. Response `tab_list` always includes **`seq`** and **`tabs`**; **`tab`** / **`focus`** match the last successful **`tab_select`** only when that tab is still present (otherwise omitted).
+- **Daemon:** `bb-browserd` requires `--debugger-url` (or `BB_BROWSER_DEBUGGER_URL`) — e.g. host:port after starting Chrome with remote debugging (`127.0.0.1:9222`). On startup it **attaches via chromedp** (`NewRemoteAllocator` only). **`POST /v1`** actions: **`tab_new`** (optional `url`) → returns new short **`tab`**; **`open`** requires **`tab`** + **`url`**; **`tab_close`** requires **`tab`**; **`tab_list`** / **`tab_select`** require **`tab`** (context tab for list; selection for select). Successful operational responses include **`tab`** + **`seq`** (INV-1).
 
 Layout: `cmd/bb-browserd` (daemon); `internal/daemon` (HTTP server, dispatch); `internal/browser` (remote CDP session); `internal/protocol` (v1 types); `internal/state` (seq, tab registry).

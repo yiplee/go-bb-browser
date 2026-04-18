@@ -6,7 +6,12 @@ Implementation strategy and milestones are documented in:
 
 - [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md)
 
-**Phase 0–1:** run the daemon with a debugger endpoint configured (Chrome must be started separately with remote debugging). The daemon attaches over CDP on startup and exposes tab APIs. Example:
+**Phase 0–2:** Intended workflow: **create a tab**, run **scoped actions** that require a tab id, then **close by id**:
+
+1. `tab_new` (optional `"url"` for initial load, e.g. `"about:blank"`) → `{ "tab", "seq" }`
+2. `open` with `"tab"` + `"url"` → navigate that tab
+3. Other tab-scoped actions carry the same `"tab"` (e.g. `tab_list`, `tab_select`, `tab_close`)
+4. `tab_close` with `"tab"` when finished
 
 ```bash
 go build -o bb-browserd ./cmd/bb-browserd
@@ -14,9 +19,10 @@ go build -o bb-browserd ./cmd/bb-browserd
 # IPv6 loopback also works (bare ::1:9222 is normalized to [::1]:9222)
 # GET http://127.0.0.1:8787/health → {"status":"ok"}
 # POST http://127.0.0.1:8787/v1  Content-Type: application/json
-#   {"action":"tab_list"}
-# After tab_select, tab_list echoes focus in both "tab" and "focus" when that tab still exists.
-#   {"action":"tab_select","tab":"<short id from tab_list>"}
+#   {"action":"tab_new","url":"about:blank"}
+#   {"action":"open","tab":"<short>","url":"https://example.com"}
+#   {"action":"tab_list","tab":"<short>"}
+#   {"action":"tab_close","tab":"<short>"}
 ```
 
 See `AGENTS.md` for build and test commands.
