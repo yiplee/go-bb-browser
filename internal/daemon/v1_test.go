@@ -139,7 +139,7 @@ func TestV1TabSelectUnknownTab(t *testing.T) {
 	}
 }
 
-func TestV1WorkflowTabNewOpenClose(t *testing.T) {
+func TestV1WorkflowTabNewGotoClose(t *testing.T) {
 	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0"}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
@@ -169,9 +169,9 @@ func TestV1WorkflowTabNewOpenClose(t *testing.T) {
 		t.Fatal("empty tab from tab_new")
 	}
 
-	rOpen := post(`{"action":"open","tab":"` + tn.Tab + `","url":"https://example.com"}`)
-	if rOpen.Code != http.StatusOK {
-		t.Fatalf("open %d %s", rOpen.Code, rOpen.Body.String())
+	rGoto := post(`{"action":"goto","tab":"` + tn.Tab + `","url":"https://example.com"}`)
+	if rGoto.Code != http.StatusOK {
+		t.Fatalf("goto %d %s", rGoto.Code, rGoto.Body.String())
 	}
 
 	rClose := post(`{"action":"tab_close","tab":"` + tn.Tab + `"}`)

@@ -9,7 +9,7 @@ Implementation strategy and milestones are documented in:
 **Phase 0–2:** Intended workflow: **create a tab**, run **scoped actions** that require a tab id, then **close by id**:
 
 1. `tab_new` (optional `"url"` for initial load, e.g. `"about:blank"`) → `{ "tab", "seq" }`
-2. `open` with `"tab"` + `"url"` → navigate that tab
+2. `goto` with `"tab"` + `"url"` → navigate that tab
 3. Other tab-scoped actions carry the same `"tab"` (e.g. `tab_list`, `tab_select`, `tab_close`)
 4. `tab_close` with `"tab"` when finished
 
@@ -20,7 +20,7 @@ go build -o bb-browserd ./cmd/bb-browserd
 # GET http://127.0.0.1:8787/health → {"status":"ok"}
 # POST http://127.0.0.1:8787/v1  Content-Type: application/json
 #   {"action":"tab_new","url":"about:blank"}
-#   {"action":"open","tab":"<short>","url":"https://example.com"}
+#   {"action":"goto","tab":"<short>","url":"https://example.com"}
 #   {"action":"tab_list","tab":"<short>"}
 #   {"action":"tab_close","tab":"<short>"}
 ```

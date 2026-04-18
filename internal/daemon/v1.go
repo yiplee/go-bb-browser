@@ -43,8 +43,8 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		s.handleTabSelect(w, req)
 	case protocol.ActionTabNew:
 		s.handleTabNew(w, req)
-	case protocol.ActionOpen:
-		s.handleOpen(w, req)
+	case protocol.ActionGoto:
+		s.handleGoto(w, req)
 	case protocol.ActionTabClose:
 		s.handleTabClose(w, req)
 	default:
@@ -208,13 +208,13 @@ func (s *Server) handleTabNew(w http.ResponseWriter, req protocol.V1Request) {
 	}
 }
 
-func (s *Server) handleOpen(w http.ResponseWriter, req protocol.V1Request) {
+func (s *Server) handleGoto(w http.ResponseWriter, req protocol.V1Request) {
 	tab := strings.TrimSpace(req.Tab)
 	if tab == "" {
 		s.writeV1Error(w, http.StatusBadRequest, protocol.V1Error{
 			Error:  "missing tab",
 			Action: req.Action,
-			Hint:   "open requires \"tab\" and \"url\"",
+			Hint:   "goto requires \"tab\" and \"url\"",
 		})
 		return
 	}
@@ -223,7 +223,7 @@ func (s *Server) handleOpen(w http.ResponseWriter, req protocol.V1Request) {
 		s.writeV1Error(w, http.StatusBadRequest, protocol.V1Error{
 			Error:  "missing url",
 			Action: req.Action,
-			Hint:   "open requires \"url\"",
+			Hint:   "goto requires \"url\"",
 		})
 		return
 	}
@@ -250,7 +250,7 @@ func (s *Server) handleOpen(w http.ResponseWriter, req protocol.V1Request) {
 		return
 	}
 	if err := conn.Navigate(tid, urlStr); err != nil {
-		s.logger.Error("open navigate failed", "err", err)
+		s.logger.Error("goto navigate failed", "err", err)
 		s.writeV1Error(w, http.StatusBadGateway, protocol.V1Error{
 			Error: "navigation failed",
 			Hint:  s.cdpHint(err),
@@ -258,16 +258,16 @@ func (s *Server) handleOpen(w http.ResponseWriter, req protocol.V1Request) {
 		return
 	}
 	seq := s.seq.Next()
-	b, err := protocol.MarshalOpen(protocol.OpenOK{Tab: tab, Seq: seq})
+	b, err := protocol.MarshalGoto(protocol.GotoOK{Tab: tab, Seq: seq})
 	if err != nil {
-		s.logger.Error("open marshal failed", "err", err)
+		s.logger.Error("goto marshal failed", "err", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write(b); err != nil {
-		s.logger.Error("open write failed", "err", err)
+		s.logger.Error("goto write failed", "err", err)
 	}
 }
 

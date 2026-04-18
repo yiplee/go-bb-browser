@@ -7,13 +7,13 @@ const (
 	ActionTabList   = "tab_list"
 	ActionTabSelect = "tab_select"
 	ActionTabNew    = "tab_new"
-	ActionOpen      = "open"
+	ActionGoto      = "goto"
 	ActionTabClose  = "tab_close"
 )
 
 // V1Request is the JSON envelope for daemon commands.
-// Tab is required for every action that operates in a tab context (tab_list, open, tab_close, tab_select).
-// URL is used by open (required) and optionally by tab_new (initial navigation URL).
+// Tab is required for every action that operates in a tab context (tab_list, goto, tab_close, tab_select).
+// URL is used by goto (required) and optionally by tab_new (initial navigation URL).
 type V1Request struct {
 	Action string `json:"action"`
 	Tab    string `json:"tab,omitempty"`
@@ -55,8 +55,8 @@ type TabNewOK struct {
 	Seq uint64 `json:"seq"`
 }
 
-// OpenOK is the success body for open (INV-1).
-type OpenOK struct {
+// GotoOK is the success body for goto (INV-1).
+type GotoOK struct {
 	Tab string `json:"tab"`
 	Seq uint64 `json:"seq"`
 }
@@ -79,7 +79,7 @@ func MarshalTabNew(ok TabNewOK) ([]byte, error) {
 	return json.Marshal(ok)
 }
 
-func MarshalOpen(ok OpenOK) ([]byte, error) {
+func MarshalGoto(ok GotoOK) ([]byte, error) {
 	return json.Marshal(ok)
 }
 
