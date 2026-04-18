@@ -1,6 +1,7 @@
 package state
 
 import (
+	"slices"
 	"strings"
 	"sync"
 	"unicode"
@@ -10,7 +11,7 @@ import (
 
 // TabRegistry maps CDP target ids to stable short ids for the HTTP API (INV-3).
 type TabRegistry struct {
-	mu sync.Mutex
+	mu sync.RWMutex
 
 	targetToShort map[target.ID]string
 	shortToTarget map[string]target.ID
@@ -44,8 +45,20 @@ func (r *TabRegistry) SyncPageTargets(infos []*target.Info) []TabSnapshot {
 		}
 	}
 
-	out := make([]TabSnapshot, 0, len(present))
+	ids := make([]target.ID, 0, len(present))
 	for id := range present {
+		ids = append(ids, id)
+	}
+	slices.SortFunc(ids, func(a, b target.ID) int {
+		if x, y := string(a), string(b); x < y {
+			return -1
+		} else if x > y {
+			return 1
+		}
+		return 0
+	})
+	out := make([]TabSnapshot, 0, len(ids))
+	for _, id := range ids {
 		short := r.assignShortLocked(id)
 		out = append(out, TabSnapshot{
 			ShortID:  short,
@@ -115,8 +128,10 @@ func (r *TabRegistry) assignShortLocked(id target.ID) string {
 	}
 	hexDigits := hexRunes(string(id))
 	if len(hexDigits) == 0 {
-		// No hex in id — use full string as last resort (unique).
 		s := sanitizeShort(string(id))
+		if oid, taken := r.shortToTarget[s]; taken && oid != id {
+			s = string(id)
+		}
 		r.registerLocked(id, s)
 		return s
 	}
@@ -164,8 +179,8 @@ func sanitizeShort(s string) string {
 
 // Lookup validates short id and returns the CDP target id (INV-3).
 func (r *TabRegistry) Lookup(shortID string) (target.ID, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	shortID = strings.TrimSpace(shortID)
 	if shortID == "" {
 		return "", false
@@ -191,7 +206,7 @@ func (r *TabRegistry) Select(shortID string) bool {
 
 // Selected returns the current focus short id, or "".
 func (r *TabRegistry) Selected() string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.selected
 }

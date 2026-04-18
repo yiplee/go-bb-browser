@@ -3,10 +3,13 @@ package browser
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
+
+const defaultConnectTimeout = 30 * time.Second
 
 // Session wraps a chromedp remote allocator + browser context for Phase 1 tab APIs.
 // Only NewRemoteAllocator is used — the daemon never launches Chrome (see IMPLEMENTATION_PLAN §5.1).
@@ -23,7 +26,9 @@ func Connect(parent context.Context, debuggerURL string) (*Session, error) {
 	}
 	allocCtx, allocCancel := chromedp.NewRemoteAllocator(parent, debuggerURL)
 	ctx, ctxCancel := chromedp.NewContext(allocCtx)
-	if err := chromedp.Run(ctx); err != nil {
+	runCtx, cancelRun := context.WithTimeout(ctx, defaultConnectTimeout)
+	defer cancelRun()
+	if err := chromedp.Run(runCtx); err != nil {
 		ctxCancel()
 		allocCancel()
 		return nil, fmt.Errorf("cdp connect: %w", err)

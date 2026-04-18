@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -58,9 +59,10 @@ func (s *Server) handleTabList(w http.ResponseWriter, _ protocol.V1Request) {
 	}
 	targets, err := conn.PageTargets()
 	if err != nil {
+		s.logger.Error("tab_list targets failed", "err", err)
 		s.writeV1Error(w, http.StatusBadGateway, protocol.V1Error{
 			Error: "failed to list targets",
-			Hint:  err.Error(),
+			Hint:  s.cdpListHint(err),
 		})
 		return
 	}
@@ -69,7 +71,16 @@ func (s *Server) handleTabList(w http.ResponseWriter, _ protocol.V1Request) {
 		return snaps[i].ShortID < snaps[j].ShortID
 	})
 	items := make([]protocol.TabListItem, 0, len(snaps))
-	var primary string
+	var tabField string
+	focus := s.tabs.Selected()
+	if focus != "" {
+		for _, sn := range snaps {
+			if sn.ShortID == focus {
+				tabField = focus
+				break
+			}
+		}
+	}
 	for _, sn := range snaps {
 		items = append(items, protocol.TabListItem{
 			Tab:   sn.ShortID,
@@ -77,23 +88,12 @@ func (s *Server) handleTabList(w http.ResponseWriter, _ protocol.V1Request) {
 			URL:   sn.URL,
 		})
 	}
-	if sel := s.tabs.Selected(); sel != "" {
-		for _, sn := range snaps {
-			if sn.ShortID == sel {
-				primary = sel
-				break
-			}
-		}
-	}
-	if primary == "" && len(snaps) > 0 {
-		primary = snaps[0].ShortID
-	}
 	seq := s.seq.Next()
 	body := protocol.TabListOK{
-		Tab:   primary,
+		Tab:   tabField,
 		Seq:   seq,
 		Tabs:  items,
-		Focus: s.tabs.Selected(),
+		Focus: focus,
 	}
 	b, err := protocol.MarshalTabList(body)
 	if err != nil {
@@ -127,26 +127,20 @@ func (s *Server) handleTabSelect(w http.ResponseWriter, req protocol.V1Request) 
 	}
 	targets, err := conn.PageTargets()
 	if err != nil {
+		s.logger.Error("tab_select targets failed", "err", err)
 		s.writeV1Error(w, http.StatusBadGateway, protocol.V1Error{
 			Error: "failed to list targets",
-			Hint:  err.Error(),
+			Hint:  s.cdpListHint(err),
 		})
 		return
 	}
 	s.tabs.SyncPageTargets(targets)
 
-	if _, ok := s.tabs.Lookup(tab); !ok {
-		s.writeV1Error(w, http.StatusBadRequest, protocol.V1Error{
-			Error:  "unknown tab id",
-			Action: req.Action,
-			Hint:   "invalid or stale tab short id",
-		})
-		return
-	}
 	if !s.tabs.Select(tab) {
 		s.writeV1Error(w, http.StatusBadRequest, protocol.V1Error{
 			Error:  "unknown tab id",
 			Action: req.Action,
+			Hint:   "invalid or stale tab short id",
 		})
 		return
 	}
@@ -175,6 +169,13 @@ func (s *Server) writeV1Error(w http.ResponseWriter, status int, e protocol.V1Er
 	if _, err := w.Write(b); err != nil && s.logger != nil {
 		s.logger.Error("error response write failed", "err", err)
 	}
+}
+
+func (s *Server) cdpListHint(err error) string {
+	if err == nil {
+		return ""
+	}
+	return fmt.Sprintf("CDP Target.getTargets failed (%T)", err)
 }
 
 // tabConn lists page targets from CDP (implemented by browser.Session).

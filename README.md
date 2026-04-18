@@ -15,6 +15,7 @@ go build -o bb-browserd ./cmd/bb-browserd
 # GET http://127.0.0.1:8787/health → {"status":"ok"}
 # POST http://127.0.0.1:8787/v1  Content-Type: application/json
 #   {"action":"tab_list"}
+# After tab_select, tab_list echoes focus in both "tab" and "focus" when that tab still exists.
 #   {"action":"tab_select","tab":"<short id from tab_list>"}
 ```
 

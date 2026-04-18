@@ -30,11 +30,12 @@ type TabListItem struct {
 }
 
 // TabListOK is the success body for tab_list (INV-1).
+// Tab is the focused short id from tab_select, only present when focus is known.
 type TabListOK struct {
-	Tab   string        `json:"tab"`
+	Tab   string        `json:"tab,omitempty"`
 	Seq   uint64        `json:"seq"`
 	Tabs  []TabListItem `json:"tabs"`
-	Focus string        `json:"focus,omitempty"` // selected short id, if any
+	Focus string        `json:"focus,omitempty"`
 }
 
 // TabSelectOK is the success body for tab_select (INV-1).
