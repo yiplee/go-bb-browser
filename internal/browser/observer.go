@@ -21,7 +21,8 @@ type ObsRecorder interface {
 }
 
 // SyncObservers starts listeners for new page targets and stops observers for targets
-// that disappeared. parent should be cancelled on daemon shutdown.
+// that disappeared. parent is the browser session context (typically not cancelled on
+// daemon shutdown so Chrome tabs are not closed).
 func (s *Session) SyncObservers(parent context.Context, infos []*target.Info, rec ObsRecorder, lg *slog.Logger) {
 	if s == nil || rec == nil {
 		return

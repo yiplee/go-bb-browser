@@ -87,7 +87,8 @@ func newTabCmd() *cobra.Command {
 			return cmdRPC(ctx, baseURL, jsonOut, "tab_new", map[string]any{"url": initialURL})
 		},
 	}
-	newTab.Flags().StringVar(&initialURL, "url", "about:blank", "initial URL for the new tab")
+	// Use --initial-url (not --url) so it does not collide with the root persistent --url (daemon base).
+	newTab.Flags().StringVar(&initialURL, "initial-url", "about:blank", `URL to open in the new tab (JSON-RPC "url" param)`)
 
 	closeTab := &cobra.Command{
 		Use:   "close TAB",

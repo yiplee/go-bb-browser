@@ -27,8 +27,10 @@ type Server struct {
 	tabMu    sync.RWMutex
 	tabLive  tabConn // set after CDP connect in ListenAndServe
 	tabHook  tabConn // optional: tests inject fake CDP
-	sessDone func()  // closes remote session on shutdown
-	sessMu   sync.Mutex
+	sessDone func()  // releases browser session references on shutdown (does not close Chrome)
+
+	// lastBrowserOK is updated after a successful CDP health probe (see ensureBrowserSession).
+	lastBrowserOK time.Time
 
 	obsStore *state.TabObsStore
 	obsSink  *obsSink
@@ -112,21 +114,12 @@ func (s *Server) handleHealthGet(w http.ResponseWriter, _ *http.Request) {
 // ListenAndServe starts the HTTP server until ctx is cancelled or Listen fails.
 func (s *Server) ListenAndServe(ctx context.Context) error {
 	if !s.SkipBrowserAttach && s.tabHook == nil {
-		sess, err := browser.Connect(ctx, s.cfg.DebuggerURL)
-		if err != nil {
+		s.tabMu.Lock()
+		if err := s.connectBrowserLocked(ctx); err != nil {
+			s.tabMu.Unlock()
 			return fmt.Errorf("cdp attach: %w", err)
 		}
-		s.tabMu.Lock()
-		s.tabLive = sess
-		s.sessDone = sess.Close
 		s.tabMu.Unlock()
-		targets, terr := sess.PageTargets()
-		if terr != nil {
-			s.logger.Warn("list targets at startup", "err", terr)
-			targets = nil
-		}
-		s.tabs.SyncPageTargets(targets)
-		s.syncObservation(sess, targets)
 		defer func() {
 			s.tabMu.Lock()
 			if s.sessDone != nil {

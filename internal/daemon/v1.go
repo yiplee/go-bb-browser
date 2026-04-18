@@ -3,7 +3,6 @@ package daemon
 import (
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -50,6 +49,14 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	id := req.ID
 	params := protocol.NormalizeParams(req.Params)
 	method := strings.TrimSpace(req.Method)
+
+	if err := s.ensureBrowserSession(r.Context()); err != nil {
+		s.rpcErr(w, id, protocol.CodeServerError, "browser not connected", &protocol.ErrData{
+			Error: "could not connect to browser",
+			Hint:  err.Error(),
+		})
+		return
+	}
 
 	switch method {
 	case protocol.MethodTabList:
@@ -658,7 +665,7 @@ func (s *Server) cdpHint(err error) string {
 	if err == nil {
 		return ""
 	}
-	return fmt.Sprintf("CDP error (%T)", err)
+	return err.Error()
 }
 
 // tabConn is the CDP surface used by /v1 handlers.
