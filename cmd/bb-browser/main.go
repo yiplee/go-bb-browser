@@ -973,8 +973,16 @@ func newSiteCmd() *cobra.Command {
 			_ = cmd.Help()
 			return
 		}
-		run.SetArgs(args)
-		if err := run.ExecuteContext(cmd.Context()); err != nil {
+		// Do not call run.ExecuteContext: Cobra runs ExecuteC on the root when the
+		// command has a parent, which would re-parse os.Args, hit `site` again, and recurse.
+		run.SetContext(cmd.Context())
+		if run.Args != nil {
+			if err := run.Args(run, args); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+		}
+		if err := run.RunE(run, args); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -991,33 +999,27 @@ func printSiteResult(raw json.RawMessage) {
 		fmt.Println(string(raw))
 		return
 	}
-	obj, ok := v.(map[string]any)
-	if !ok {
-		var buf bytes.Buffer
-		_ = json.Indent(&buf, raw, "", "  ")
-		_, _ = buf.WriteTo(os.Stdout)
-		fmt.Println()
-		return
-	}
-	if errStr, ok := obj["error"].(string); ok && errStr != "" {
-		fmt.Fprintf(os.Stderr, "[error] %s\n", errStr)
-		combined := errStr
-		if h, ok := obj["hint"].(string); ok {
-			combined += " " + h
-			fmt.Fprintf(os.Stderr, "  Hint: %s\n", h)
+	if obj, ok := v.(map[string]any); ok {
+		if errStr, ok := obj["error"].(string); ok && errStr != "" {
+			fmt.Fprintf(os.Stderr, "[error] %s\n", errStr)
+			combined := errStr
+			if h, ok := obj["hint"].(string); ok {
+				combined += " " + h
+				fmt.Fprintf(os.Stderr, "  Hint: %s\n", h)
+			}
+			if loginHintRe.MatchString(combined) {
+				fmt.Fprintln(os.Stderr, "  (Log in to the site in Chrome for this profile, then retry.)")
+			}
+			return
 		}
-		if loginHintRe.MatchString(combined) {
-			fmt.Fprintln(os.Stderr, "  (Log in to the site in Chrome for this profile, then retry.)")
-		}
-		return
 	}
-	var buf bytes.Buffer
-	if err := json.Indent(&buf, raw, "", "  "); err != nil {
+	// json.Indent preserves \uXXXX from CDP; round-trip through MarshalIndent prints UTF-8.
+	pretty, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
 		fmt.Println(string(raw))
-	} else {
-		_, _ = buf.WriteTo(os.Stdout)
-		fmt.Println()
+		return
 	}
+	fmt.Println(string(pretty))
 }
 
 func pickTabForSite(ctx context.Context, domain string) (string, error) {

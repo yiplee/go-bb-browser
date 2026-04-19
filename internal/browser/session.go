@@ -405,8 +405,10 @@ func (s *Session) Screenshot(tabID target.ID, format string) ([]byte, string, er
 }
 
 // Eval runs script in the page and returns JSON-marshalable result as RawMessage.
+// awaitPromise is true so async expressions (including site adapters) resolve to
+// JSON-serializable values instead of a Promise handle.
 func (s *Session) Eval(tabID target.ID, script string) (json.RawMessage, error) {
-	return s.EvalAwait(tabID, script, false)
+	return s.EvalAwait(tabID, script, true)
 }
 
 // EvalAwait runs script; when awaitPromise is true, resolves Promises (same as bb-browser fetch).
