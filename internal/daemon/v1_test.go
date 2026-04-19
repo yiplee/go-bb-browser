@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/chromedp/cdproto/target"
+	"github.com/yiplee/go-bb-browser/internal/browser"
 	"github.com/yiplee/go-bb-browser/internal/protocol"
 	"github.com/yiplee/go-bb-browser/internal/state"
 )
@@ -85,6 +86,20 @@ func (f *fakeConn) Click(target.ID, string) error {
 func (f *fakeConn) Fill(target.ID, string, string) error {
 	return nil
 }
+
+func (f *fakeConn) FetchPage(target.ID, string, string, []byte, string) (json.RawMessage, error) {
+	return json.RawMessage(`{"ok":true,"status":200}`), nil
+}
+
+func (f *fakeConn) Snapshot(target.ID, browser.SnapshotOpts) (string, string, string, map[string]string, error) {
+	return "t", "https://ex", "snap", map[string]string{"1": `[__bb_snap_ref="1"]`}, nil
+}
+
+func (f *fakeConn) AppendNetworkRoute(target.ID, browser.NetworkRouteRule) error { return nil }
+
+func (f *fakeConn) RemoveNetworkRoutes(target.ID, string) error { return nil }
+
+func (f *fakeConn) NetworkRouteCount(target.ID) int { return 0 }
 
 func (f *fakeConn) DetectForegroundShort([]state.TabSnapshot) (string, bool) {
 	return "", false

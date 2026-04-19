@@ -87,6 +87,39 @@ func (s *TabObsStore) ClearTarget(id target.ID) {
 	delete(s.targets, id)
 }
 
+// ClearNetworkOnly clears only the network ring for a target (keep console/errors).
+func (s *TabObsStore) ClearNetworkOnly(id target.ID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tb := s.targets[id]
+	if tb == nil {
+		return
+	}
+	tb.net = newRing(s.netCap)
+}
+
+// ClearConsoleOnly clears only the console ring for a target.
+func (s *TabObsStore) ClearConsoleOnly(id target.ID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tb := s.targets[id]
+	if tb == nil {
+		return
+	}
+	tb.cons = newRing(s.consCap)
+}
+
+// ClearErrorsOnly clears only the errors ring for a target.
+func (s *TabObsStore) ClearErrorsOnly(id target.ID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tb := s.targets[id]
+	if tb == nil {
+		return
+	}
+	tb.err = newRing(s.errCap)
+}
+
 // PushNetwork records a network observation with the given global seq.
 func (s *TabObsStore) PushNetwork(id target.ID, seq uint64, data json.RawMessage) {
 	s.mu.Lock()

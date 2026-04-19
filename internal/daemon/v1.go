@@ -3,12 +3,14 @@ package daemon
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
 	"sync"
 
 	"github.com/chromedp/cdproto/target"
+	"github.com/yiplee/go-bb-browser/internal/browser"
 	"github.com/yiplee/go-bb-browser/internal/protocol"
 	"github.com/yiplee/go-bb-browser/internal/state"
 )
@@ -87,6 +89,20 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		s.handleConsole(w, id, params)
 	case protocol.MethodErrors:
 		s.handleErrors(w, id, params)
+	case protocol.MethodFetch:
+		s.handleFetch(w, id, params)
+	case protocol.MethodSnapshot:
+		s.handleSnapshot(w, id, params)
+	case protocol.MethodNetworkRoute:
+		s.handleNetworkRoute(w, id, params)
+	case protocol.MethodNetworkUnroute:
+		s.handleNetworkUnroute(w, id, params)
+	case protocol.MethodNetworkClear:
+		s.handleNetworkClear(w, id, params)
+	case protocol.MethodConsoleClear:
+		s.handleConsoleClear(w, id, params)
+	case protocol.MethodErrorsClear:
+		s.handleErrorsClear(w, id, params)
 	default:
 		if method == "" {
 			s.rpcErr(w, id, protocol.CodeInvalidRequest, "missing method", nil)
@@ -611,6 +627,11 @@ func (s *Server) handleClick(w http.ResponseWriter, id json.RawMessage, params j
 	}
 	tab := strings.TrimSpace(p.Tab)
 	sel := strings.TrimSpace(p.Selector)
+	ref := strings.TrimSpace(p.Ref)
+	if ref != "" {
+		ref = strings.TrimPrefix(ref, "@")
+		sel = fmt.Sprintf(`[__bb_snap_ref="%s"]`, strings.ReplaceAll(ref, `"`, `\"`))
+	}
 	if tab == "" {
 		s.rpcErr(w, id, protocol.CodeInvalidParams, "missing tab", &protocol.ErrData{
 			Error:  "missing tab",
@@ -620,7 +641,7 @@ func (s *Server) handleClick(w http.ResponseWriter, id json.RawMessage, params j
 	}
 	if sel == "" {
 		s.rpcErr(w, id, protocol.CodeInvalidParams, "missing selector", &protocol.ErrData{
-			Error:  "missing selector",
+			Error:  "missing selector or ref",
 			Method: protocol.MethodClick,
 		})
 		return
@@ -734,6 +755,317 @@ func (s *Server) handleObsQuery(w http.ResponseWriter, id json.RawMessage, param
 	})
 }
 
+func (s *Server) handleFetch(w http.ResponseWriter, id json.RawMessage, params json.RawMessage) {
+	var p protocol.FetchParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "invalid params", nil)
+		return
+	}
+	tab := strings.TrimSpace(p.Tab)
+	rawURL := strings.TrimSpace(p.URL)
+	if tab == "" {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "missing tab", &protocol.ErrData{
+			Error:  "missing tab",
+			Method: protocol.MethodFetch,
+		})
+		return
+	}
+	if rawURL == "" {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "missing url", &protocol.ErrData{
+			Error:  "missing url",
+			Method: protocol.MethodFetch,
+		})
+		return
+	}
+	conn := s.tabConn()
+	if conn == nil {
+		s.rpcErr(w, id, protocol.CodeServerError, "browser session not ready", nil)
+		return
+	}
+	unlock := s.lockTab(tab)
+	defer unlock()
+	tid, ok := s.resolveTab(conn, tab)
+	if !ok {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "unknown tab id", &protocol.ErrData{
+			Error:  "unknown tab id",
+			Hint:   "invalid or stale tab short id",
+			Method: protocol.MethodFetch,
+		})
+		return
+	}
+	routing, ok := conn.(fetchConn)
+	if !ok {
+		s.rpcErr(w, id, protocol.CodeServerError, "fetch not supported", &protocol.ErrData{
+			Error: "browser backend does not implement fetch",
+		})
+		return
+	}
+	hdrs := []byte(strings.TrimSpace(p.Headers))
+	out, err := routing.FetchPage(tid, rawURL, p.Method, hdrs, p.Body)
+	if err != nil {
+		s.logger.Error("fetch failed", "err", err)
+		s.rpcErr(w, id, protocol.CodeServerError, "fetch failed", &protocol.ErrData{
+			Error: "fetch failed",
+			Hint:  s.cdpHint(err),
+		})
+		return
+	}
+	var wrap struct {
+		OK     bool `json:"ok"`
+		Status int  `json:"status"`
+	}
+	_ = json.Unmarshal(out, &wrap)
+	seq := s.seq.Next()
+	s.rpcOK(w, id, protocol.FetchResult{
+		Tab:    tab,
+		Seq:    seq,
+		OK:     wrap.OK,
+		Status: wrap.Status,
+		Result: out,
+	})
+}
+
+func (s *Server) handleSnapshot(w http.ResponseWriter, id json.RawMessage, params json.RawMessage) {
+	var p protocol.SnapshotParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "invalid params", nil)
+		return
+	}
+	tab := strings.TrimSpace(p.Tab)
+	if tab == "" {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "missing tab", &protocol.ErrData{
+			Error:  "missing tab",
+			Method: protocol.MethodSnapshot,
+		})
+		return
+	}
+	conn := s.tabConn()
+	if conn == nil {
+		s.rpcErr(w, id, protocol.CodeServerError, "browser session not ready", nil)
+		return
+	}
+	unlock := s.lockTab(tab)
+	defer unlock()
+	tid, ok := s.resolveTab(conn, tab)
+	if !ok {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "unknown tab id", &protocol.ErrData{
+			Error:  "unknown tab id",
+			Method: protocol.MethodSnapshot,
+		})
+		return
+	}
+	snapper, ok := conn.(snapshotConn)
+	if !ok {
+		s.rpcErr(w, id, protocol.CodeServerError, "snapshot not supported", nil)
+		return
+	}
+	title, pageURL, text, refs, err := snapper.Snapshot(tid, browser.SnapshotOpts{
+		InteractiveOnly: p.InteractiveOnly,
+		PruneEmpty:      p.PruneEmpty,
+		MaxDepth:        p.MaxDepth,
+		SelectorScope:   strings.TrimSpace(p.SelectorScope),
+	})
+	if err != nil {
+		s.logger.Error("snapshot failed", "err", err)
+		s.rpcErr(w, id, protocol.CodeServerError, "snapshot failed", &protocol.ErrData{
+			Error: "snapshot failed",
+			Hint:  s.cdpHint(err),
+		})
+		return
+	}
+	if refs == nil {
+		refs = map[string]string{}
+	}
+	seq := s.seq.Next()
+	s.rpcOK(w, id, protocol.SnapshotResult{
+		Tab:   tab,
+		Seq:   seq,
+		Title: title,
+		URL:   pageURL,
+		Text:  text,
+		Refs:  refs,
+	})
+}
+
+func (s *Server) handleNetworkRoute(w http.ResponseWriter, id json.RawMessage, params json.RawMessage) {
+	var p protocol.NetworkRouteParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "invalid params", nil)
+		return
+	}
+	tab := strings.TrimSpace(p.Tab)
+	pat := strings.TrimSpace(p.URLPattern)
+	if tab == "" || pat == "" {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "missing tab or url_pattern", nil)
+		return
+	}
+	conn := s.tabConn()
+	if conn == nil {
+		s.rpcErr(w, id, protocol.CodeServerError, "browser session not ready", nil)
+		return
+	}
+	unlock := s.lockTab(tab)
+	defer unlock()
+	tid, ok := s.resolveTab(conn, tab)
+	if !ok {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "unknown tab id", nil)
+		return
+	}
+	rc, ok := conn.(routeConn)
+	if !ok {
+		s.rpcErr(w, id, protocol.CodeServerError, "network_route not supported", nil)
+		return
+	}
+	rule := browser.NetworkRouteRule{
+		URLPattern:  pat,
+		Abort:       p.Abort,
+		MockBody:    p.Body,
+		ContentType: p.ContentType,
+		Status:      p.Status,
+	}
+	if err := rc.AppendNetworkRoute(tid, rule); err != nil {
+		s.logger.Error("network_route failed", "err", err)
+		s.rpcErr(w, id, protocol.CodeServerError, "network_route failed", &protocol.ErrData{Hint: s.cdpHint(err)})
+		return
+	}
+	seq := s.seq.Next()
+	s.rpcOK(w, id, protocol.NetworkRouteResult{
+		Tab:    tab,
+		Seq:    seq,
+		Routes: rc.NetworkRouteCount(tid),
+	})
+}
+
+func (s *Server) handleNetworkUnroute(w http.ResponseWriter, id json.RawMessage, params json.RawMessage) {
+	var p protocol.NetworkUnrouteParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "invalid params", nil)
+		return
+	}
+	tab := strings.TrimSpace(p.Tab)
+	if tab == "" {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "missing tab", nil)
+		return
+	}
+	conn := s.tabConn()
+	if conn == nil {
+		s.rpcErr(w, id, protocol.CodeServerError, "browser session not ready", nil)
+		return
+	}
+	unlock := s.lockTab(tab)
+	defer unlock()
+	tid, ok := s.resolveTab(conn, tab)
+	if !ok {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "unknown tab id", nil)
+		return
+	}
+	rc, ok := conn.(routeConn)
+	if !ok {
+		s.rpcErr(w, id, protocol.CodeServerError, "network_unroute not supported", nil)
+		return
+	}
+	if err := rc.RemoveNetworkRoutes(tid, p.URLPattern); err != nil {
+		s.rpcErr(w, id, protocol.CodeServerError, "network_unroute failed", &protocol.ErrData{Hint: s.cdpHint(err)})
+		return
+	}
+	seq := s.seq.Next()
+	s.rpcOK(w, id, protocol.NetworkUnrouteResult{
+		Tab:    tab,
+		Seq:    seq,
+		Routes: rc.NetworkRouteCount(tid),
+	})
+}
+
+func (s *Server) handleConsoleClear(w http.ResponseWriter, id json.RawMessage, params json.RawMessage) {
+	var p protocol.ConsoleClearParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "invalid params", nil)
+		return
+	}
+	tab := strings.TrimSpace(p.Tab)
+	if tab == "" {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "missing tab", nil)
+		return
+	}
+	conn := s.tabConn()
+	if conn == nil {
+		s.rpcErr(w, id, protocol.CodeServerError, "browser session not ready", nil)
+		return
+	}
+	unlock := s.lockTab(tab)
+	defer unlock()
+	tid, ok := s.resolveTab(conn, tab)
+	if !ok {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "unknown tab id", nil)
+		return
+	}
+	if s.obsStore != nil {
+		s.obsStore.ClearConsoleOnly(tid)
+	}
+	seq := s.seq.Next()
+	s.rpcOK(w, id, protocol.ConsoleClearResult{Tab: tab, Seq: seq})
+}
+
+func (s *Server) handleErrorsClear(w http.ResponseWriter, id json.RawMessage, params json.RawMessage) {
+	var p protocol.ErrorsClearParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "invalid params", nil)
+		return
+	}
+	tab := strings.TrimSpace(p.Tab)
+	if tab == "" {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "missing tab", nil)
+		return
+	}
+	conn := s.tabConn()
+	if conn == nil {
+		s.rpcErr(w, id, protocol.CodeServerError, "browser session not ready", nil)
+		return
+	}
+	unlock := s.lockTab(tab)
+	defer unlock()
+	tid, ok := s.resolveTab(conn, tab)
+	if !ok {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "unknown tab id", nil)
+		return
+	}
+	if s.obsStore != nil {
+		s.obsStore.ClearErrorsOnly(tid)
+	}
+	seq := s.seq.Next()
+	s.rpcOK(w, id, protocol.ErrorsClearResult{Tab: tab, Seq: seq})
+}
+
+func (s *Server) handleNetworkClear(w http.ResponseWriter, id json.RawMessage, params json.RawMessage) {
+	var p protocol.NetworkClearParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "invalid params", nil)
+		return
+	}
+	tab := strings.TrimSpace(p.Tab)
+	if tab == "" {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "missing tab", nil)
+		return
+	}
+	conn := s.tabConn()
+	if conn == nil {
+		s.rpcErr(w, id, protocol.CodeServerError, "browser session not ready", nil)
+		return
+	}
+	unlock := s.lockTab(tab)
+	defer unlock()
+	tid, ok := s.resolveTab(conn, tab)
+	if !ok {
+		s.rpcErr(w, id, protocol.CodeInvalidParams, "unknown tab id", nil)
+		return
+	}
+	if s.obsStore != nil {
+		s.obsStore.ClearNetworkOnly(tid)
+	}
+	seq := s.seq.Next()
+	s.rpcOK(w, id, protocol.NetworkClearResult{Tab: tab, Seq: seq})
+}
+
 func (s *Server) handleFill(w http.ResponseWriter, id json.RawMessage, params json.RawMessage) {
 	var p protocol.FillParams
 	if err := json.Unmarshal(params, &p); err != nil {
@@ -742,6 +1074,11 @@ func (s *Server) handleFill(w http.ResponseWriter, id json.RawMessage, params js
 	}
 	tab := strings.TrimSpace(p.Tab)
 	sel := strings.TrimSpace(p.Selector)
+	ref := strings.TrimSpace(p.Ref)
+	if ref != "" {
+		ref = strings.TrimPrefix(ref, "@")
+		sel = fmt.Sprintf(`[__bb_snap_ref="%s"]`, strings.ReplaceAll(ref, `"`, `\"`))
+	}
 	if tab == "" {
 		s.rpcErr(w, id, protocol.CodeInvalidParams, "missing tab", &protocol.ErrData{
 			Error:  "missing tab",
@@ -751,7 +1088,7 @@ func (s *Server) handleFill(w http.ResponseWriter, id json.RawMessage, params js
 	}
 	if sel == "" {
 		s.rpcErr(w, id, protocol.CodeInvalidParams, "missing selector", &protocol.ErrData{
-			Error:  "missing selector",
+			Error:  "missing selector or ref",
 			Method: protocol.MethodFill,
 		})
 		return
@@ -814,6 +1151,20 @@ type tabConn interface {
 	Eval(tabID target.ID, script string) (json.RawMessage, error)
 	Click(tabID target.ID, selector string) error
 	Fill(tabID target.ID, selector, text string) error
+}
+
+type fetchConn interface {
+	FetchPage(tabID target.ID, rawURL, method string, headersJSON []byte, body string) (json.RawMessage, error)
+}
+
+type snapshotConn interface {
+	Snapshot(tabID target.ID, opts browser.SnapshotOpts) (title, pageURL, text string, refs map[string]string, err error)
+}
+
+type routeConn interface {
+	AppendNetworkRoute(tabID target.ID, rule browser.NetworkRouteRule) error
+	RemoveNetworkRoutes(tabID target.ID, urlPattern string) error
+	NetworkRouteCount(tabID target.ID) int
 }
 
 // lockTab serializes CDP operations per short tab id (IMPLEMENTATION_PLAN §8.2).
