@@ -1,10 +1,12 @@
 ---
-name: go-bb-browser
-description: 基于 Go 实现的浏览器自动化与信息获取：CLI 连接本地 bb-browserd（JSON-RPC），daemon 仅通过 Chrome DevTools Protocol 附加用户已启动的 Chrome，复用登录态。支持快照与 @ref、带 Cookie 的 fetch、网络观测与拦截 mock、site adapter（与 bb-sites 兼容）等。
+name: bb-browser
+description: 强大的信息获取与浏览器自动化工具（Go 实现）。CLI 连接本地 bb-browserd（JSON-RPC），daemon 仅通过 Chrome DevTools Protocol 附加用户已启动的 Chrome，复用登录态。支持快照与 @ref、带 Cookie 的 fetch、网络观测与拦截 mock、site adapter（与 bb-sites 兼容）等。
 allowed-tools: Bash(bb-browser:*)
 ---
 
-# go-bb-browser — 浏览器自动化（Go + CDP）
+# bb-browser — 浏览器自动化（Go + CDP）
+
+仓库名为 **go-bb-browser**；CLI 二进制名为 **`bb-browser`**，与上游 [bb-browser](https://github.com/epiral/bb-browser) 用法对齐。
 
 ## 架构（与上游 bb-browser 思想一致，实现不同）
 
@@ -33,6 +35,16 @@ bb-browser close
 ```
 
 全局选项：`--url`（daemon 根 URL）、`--tab <短 id>`（多数命令）、`--json`（原始 JSON-RPC）。
+
+## CLI 指南（离线文档）
+
+本仓库 `skills/bb-browser/` 下的 Markdown 与 CLI **`guide`** 同源（构建时嵌入二进制）。
+
+```bash
+bb-browser guide                      # 主文档（SKILL.md 正文）
+bb-browser guide site-system          # references/site-system.md
+bb-browser guide list                 # 列出可用主题
+```
 
 ## Site 系统（adapter）
 

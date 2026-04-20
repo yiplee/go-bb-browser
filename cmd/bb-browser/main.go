@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/yiplee/go-bb-browser/internal/guidebook"
 	"github.com/yiplee/go-bb-browser/internal/protocol"
 	"github.com/yiplee/go-bb-browser/internal/site"
 )
@@ -69,9 +70,44 @@ Requires Chrome with remote debugging and a running bb-browserd (see README).`),
 		newObsCmd("console", protocol.MethodConsole, protocol.MethodConsoleClear, "Console log buffer (or --clear)"),
 		newObsCmd("errors", protocol.MethodErrors, protocol.MethodErrorsClear, "JS error / log buffer (or --clear)"),
 		newSiteCmd(),
+		newGuideCmd(),
 	)
 
 	return root
+}
+
+func newGuideCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "guide [topic]",
+		Short: "Print embedded Markdown guide from skills/bb-browser (offline)",
+		Long: strings.TrimSpace(`
+Without a topic, prints the main skill document. With "list", prints available reference names.
+Examples: guide, guide site-system, guide fetch-and-network, guide list.
+The text is embedded at build time from skills/bb-browser/ and internal/guidebook/files/bb-browser/.`),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			topic := "skill"
+			if len(args) > 0 {
+				topic = strings.TrimSpace(args[0])
+			}
+			if topic == "list" {
+				names, err := guidebook.TopicNames()
+				if err != nil {
+					return err
+				}
+				fmt.Println(strings.Join(names, "\n"))
+				return nil
+			}
+			b, err := guidebook.Read(topic)
+			if err != nil {
+				return fmt.Errorf("%w (try: bb-browser guide list)", err)
+			}
+			_, _ = os.Stdout.Write(b)
+			if len(b) > 0 && b[len(b)-1] != '\n' {
+				fmt.Println()
+			}
+			return nil
+		},
+	}
 }
 
 func newHealthCmd() *cobra.Command {
