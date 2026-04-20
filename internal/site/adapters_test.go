@@ -19,6 +19,41 @@ func TestParseMeta(t *testing.T) {
 	}
 }
 
+func TestArgKeysFromAdapterSource_order(t *testing.T) {
+	src := []byte(`/* @meta
+{
+ "name": "google/search",
+ "args": {
+ "query": {"required": true},
+ "count": {"required": false}
+ }
+}
+*/
+`)
+	got := ArgKeysFromAdapterSource(src)
+	if len(got) != 2 || got[0] != "query" || got[1] != "count" {
+		t.Fatalf("keys %v", got)
+	}
+}
+
+func TestArgKeysFromAdapterSource_missingArgs(t *testing.T) {
+	src := []byte(`/* @meta {"name":"x","domain":"d.example"} */
+`)
+	if ArgKeysFromAdapterSource(src) != nil {
+		t.Fatal("expected nil")
+	}
+}
+
+func TestArgsObject_metaPositional(t *testing.T) {
+	b, err := ArgsObject([]string{"bitcoin"}, nil, []string{"query", "count"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"query":"bitcoin"`) || !strings.Contains(string(b), `"arg1":"bitcoin"`) {
+		t.Fatalf("%s", b)
+	}
+}
+
 func TestDiscoverMissingDir(t *testing.T) {
 	t.Setenv("HOME", filepath.Join(t.TempDir(), "nosuch"))
 	_, err := Discover()

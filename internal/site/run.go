@@ -148,10 +148,17 @@ func RunScript(adapterSrc []byte, argsJSON string) string {
 	return buf.String()
 }
 
-// ArgsObject builds a JSON object from positional args (keys arg1, arg2, …) plus named pairs from remainder.
-func ArgsObject(positional []string, named map[string]string) ([]byte, error) {
+// ArgsObject builds a JSON object from positional args: first mapped to @meta
+// "args" keys in source order (bb-sites), then always arg1, arg2, …, plus named flags.
+func ArgsObject(positional []string, named map[string]string, metaArgKeys []string) ([]byte, error) {
 	m := make(map[string]any)
 	for i, p := range positional {
+		if i < len(metaArgKeys) {
+			k := strings.TrimSpace(metaArgKeys[i])
+			if k != "" {
+				m[k] = p
+			}
+		}
 		m[fmt.Sprintf("arg%d", i+1)] = p
 	}
 	for k, v := range named {

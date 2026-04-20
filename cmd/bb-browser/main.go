@@ -914,15 +914,29 @@ func newSiteCmd() *cobra.Command {
 				}
 				positional = append(positional, a)
 			}
-			argsJSON, err := site.ArgsObject(positional, named)
+			argsJSON, err := site.ArgsObject(positional, named, site.ArgKeysFromAdapterSource(raw))
 			if err != nil {
 				return err
 			}
-			script := site.RunScript(raw, string(argsJSON))
 
 			tab, err := pickTabForSite(ctx, meta.Domain)
 			if err != nil {
 				return err
+			}
+
+			var script string
+			if meta.Name == "google/search" {
+				q, num, err := site.ParseGoogleSearchArgs(argsJSON)
+				if err != nil {
+					return err
+				}
+				serp := fmt.Sprintf("https://www.google.com/search?q=%s&num=%d", url.QueryEscape(q), num)
+				if err := cmdRPC(ctx, baseURL, jsonOut, protocol.MethodGoto, map[string]any{"tab": tab, "url": serp}); err != nil {
+					return err
+				}
+				script = site.GoogleSearchDomProgram(string(argsJSON))
+			} else {
+				script = site.RunScript(raw, string(argsJSON))
 			}
 
 			b, err := postRPC(ctx, baseURL, protocol.MethodEval, map[string]any{"tab": tab, "script": script})

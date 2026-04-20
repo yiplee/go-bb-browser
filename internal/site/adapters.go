@@ -1,6 +1,7 @@
 package site
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -74,6 +75,66 @@ func parseMeta(src []byte) (AdapterMeta, error) {
 		return z, err
 	}
 	return z, nil
+}
+
+// ArgKeysFromAdapterSource returns @meta "args" keys in JSON source order so CLI
+// positionals can match bb-sites adapters (e.g. google/search expects args.query).
+func ArgKeysFromAdapterSource(src []byte) []string {
+	m := metaBlock.FindSubmatch(src)
+	if len(m) < 2 {
+		return nil
+	}
+	keys, err := metaArgKeysInOrder(m[1])
+	if err != nil {
+		return nil
+	}
+	return keys
+}
+
+func metaArgKeysInOrder(metaInner []byte) ([]string, error) {
+	var meta struct {
+		Args json.RawMessage `json:"args"`
+	}
+	if err := json.Unmarshal(metaInner, &meta); err != nil {
+		return nil, err
+	}
+	if len(meta.Args) == 0 || string(meta.Args) == "null" {
+		return nil, nil
+	}
+	return argsObjectKeysInOrder(meta.Args)
+}
+
+// argsObjectKeysInOrder walks a JSON object using Decoder.Token + Decode
+// (Decoder.Skip is unavailable in some Go versions).
+func argsObjectKeysInOrder(objJSON []byte) ([]string, error) {
+	dec := json.NewDecoder(bytes.NewReader(objJSON))
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, err
+	}
+	d, ok := tok.(json.Delim)
+	if !ok || d != '{' {
+		return nil, fmt.Errorf("args: expected object")
+	}
+	var keys []string
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil, err
+		}
+		if delim, ok := tok.(json.Delim); ok && delim == '}' {
+			return keys, nil
+		}
+		k, ok := tok.(string)
+		if !ok {
+			return nil, fmt.Errorf("args: expected string key")
+		}
+		keys = append(keys, k)
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return nil, err
+		}
+	}
 }
 
 // Search filters adapters by substring on name, description, domain.
