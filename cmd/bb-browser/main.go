@@ -60,6 +60,7 @@ Requires Chrome with remote debugging and a running bb-browserd (see README).`),
 		newFillCmd(),
 		newFetchCmd(),
 		newScreenshotCmd(),
+		newHtmlCmd(),
 		newReloadCmd(),
 		newRefreshAlias(),
 		newCloseCmd(),
@@ -480,6 +481,53 @@ func newScreenshotCmd() *cobra.Command {
 	}
 	c.Flags().StringVar(&format, "format", "png", "png or jpeg")
 	c.Flags().StringVar(&outPath, "output", "", "output path (default auto name)")
+	return c
+}
+
+func newHtmlCmd() *cobra.Command {
+	var outPath string
+	c := &cobra.Command{
+		Use:   "html",
+		Short: "Print the tab's rendered HTML (document.documentElement.outerHTML via eval)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, cancel := context.WithTimeout(cmd.Context(), 120*time.Second)
+			defer cancel()
+			tab, err := effectiveTab(ctx, baseURL, tabFlag)
+			if err != nil {
+				return err
+			}
+			script := `(function(){return document.documentElement.outerHTML})()`
+			if jsonOut {
+				return cmdRPC(ctx, baseURL, true, protocol.MethodEval, map[string]any{"tab": tab, "script": script})
+			}
+			b, err := postRPC(ctx, baseURL, protocol.MethodEval, map[string]any{"tab": tab, "script": script})
+			if err != nil {
+				return err
+			}
+			if err := rpcEnvelopeError(b); err != nil {
+				return err
+			}
+			var env struct {
+				Result protocol.EvalResult `json:"result"`
+			}
+			if err := json.Unmarshal(b, &env); err != nil {
+				return err
+			}
+			var html string
+			if err := json.Unmarshal(env.Result.Result, &html); err != nil {
+				return fmt.Errorf("decode eval result as HTML string: %w", err)
+			}
+			if outPath != "" {
+				return os.WriteFile(outPath, []byte(html), 0o644)
+			}
+			fmt.Print(html)
+			if !strings.HasSuffix(html, "\n") {
+				fmt.Println()
+			}
+			return nil
+		},
+	}
+	c.Flags().StringVar(&outPath, "output", "", "write HTML to file instead of stdout")
 	return c
 }
 
