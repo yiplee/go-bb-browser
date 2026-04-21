@@ -1,6 +1,6 @@
 # Adapter 开发（go-bb-browser）
 
-开发与 [bb-browser adapter 指南](https://github.com/epiral/bb-browser) 的流程一致：**逆向网络 → eval 验证 → 写 adapter JS → 放入 `~/.bb-browser/sites/`**。
+推荐流程：**逆向网络 → eval 验证 → 写 adapter JS → 放入 `~/.bb-browser/sites/`**。
 
 下列命令对应 **go-bb-browser CLI**：
 
@@ -33,7 +33,7 @@ bb-browser fetch /internal/api/foo.json --tab <短id>
 })
 ```
 
-外层需可被包装为 **单一 async 表达式**（`site run` 会以 IIFE 调用）。
+外层需可被包装为 **单一 async 表达式**（`run` 会以 IIFE 调用）。
 
 ## 3. 返回值
 
@@ -49,9 +49,9 @@ CLI 会对常见鉴权失败文案给出登录提示。
 
 ```bash
 cp my.js ~/.bb-browser/sites/demo/test.js
-bb-browser site run demo/test "hello" --json
+bb-browser run ~/.bb-browser/sites/demo/test.js "hello" --json
 ```
 
-## 5. 共享到社区
+## 5. 分发
 
-向 [epiral/bb-sites](https://github.com/epiral/bb-sites) 提 PR；本地只认 **`~/.bb-browser/sites/`**。
+将 `.js` 放在任意路径，用 **`bb-browser run <路径>`** 调用即可；`~/.bb-browser/sites/` 仅作为常见存放目录约定。

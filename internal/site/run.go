@@ -11,7 +11,7 @@ import (
 
 var reAnonAsyncHead = regexp.MustCompile(`(?s)\basync\s+function\s*\([^)]*\)\s*\{`)
 
-// prepareAdapterJS fixes bb-sites style adapters: `async function(args) { ... }` is a
+// prepareAdapterJS fixes adapters written as `async function(args) { ... }`, which is a
 // syntax error when nested inside RunScript's outer function (anonymous declaration).
 // It becomes an async function expression assigned to __bb_run, then invoked.
 func prepareAdapterJS(src []byte) []byte {
@@ -22,7 +22,7 @@ func prepareAdapterJS(src []byte) []byte {
 }
 
 func stripExportDefaultAfterMeta(s string) string {
-	// ESM default export is invalid inside our wrapper; bb-sites sometimes use it.
+	// ESM default export is invalid inside our wrapper; some adapters use it.
 	s = regexp.MustCompile(`(\*/\s*)export\s+default\s+`).ReplaceAllString(s, "$1")
 	s = regexp.MustCompile(`(?s)^\s*export\s+default\s+`).ReplaceAllString(s, "")
 	return s
@@ -132,7 +132,7 @@ func matchingJSBrace(s string, open int) int {
 	return -1
 }
 
-// RunScript wraps adapter source as an async IIFE like bb-browser site run.
+// RunScript wraps adapter source as an async IIFE for bb-browser run.
 func RunScript(adapterSrc []byte, argsJSON string) string {
 	a := strings.TrimSpace(argsJSON)
 	if a == "" || a == "null" {
@@ -149,7 +149,7 @@ func RunScript(adapterSrc []byte, argsJSON string) string {
 }
 
 // ArgsObject builds a JSON object from positional args: first mapped to @meta
-// "args" keys in source order (bb-sites), then always arg1, arg2, …, plus named flags.
+// "args" keys in source order from @meta, then always arg1, arg2, …, plus named flags.
 func ArgsObject(positional []string, named map[string]string, metaArgKeys []string) ([]byte, error) {
 	m := make(map[string]any)
 	for i, p := range positional {

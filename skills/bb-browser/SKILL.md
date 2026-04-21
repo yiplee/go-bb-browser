@@ -1,14 +1,14 @@
 ---
 name: bb-browser
-description: 强大的信息获取与浏览器自动化工具（Go 实现）。CLI 连接本地 bb-browserd（JSON-RPC），daemon 仅通过 Chrome DevTools Protocol 附加用户已启动的 Chrome，复用登录态。支持快照与 @ref、带 Cookie 的 fetch、网络观测与拦截 mock、site adapter（与 bb-sites 兼容）等。
+description: 强大的信息获取与浏览器自动化工具（Go 实现）。CLI 连接本地 bb-browserd（JSON-RPC），daemon 仅通过 Chrome DevTools Protocol 附加用户已启动的 Chrome，复用登录态。支持快照与 @ref、带 Cookie 的 fetch、网络观测与拦截 mock、`run`（对 adapter `.js` 做页面内 eval）等。
 allowed-tools: Bash(bb-browser:*)
 ---
 
 # bb-browser — 浏览器自动化（Go + CDP）
 
-仓库名为 **go-bb-browser**；CLI 二进制名为 **`bb-browser`**，与上游 [bb-browser](https://github.com/epiral/bb-browser) 用法对齐。
+仓库名为 **go-bb-browser**；CLI 二进制名为 **`bb-browser`**。
 
-## 架构（与上游 bb-browser 思想一致，实现不同）
+## 架构
 
 ```
 CLI (bb-browser)  →  HTTP bb-browserd (POST /v1 JSON-RPC)  →  Chrome（仅 CDP 附加）
@@ -36,31 +36,20 @@ bb-browser close
 
 全局选项：`--url`（daemon 根 URL）、`--tab <短 id>`（多数命令）、`--json`（原始 JSON-RPC）。
 
-## CLI 指南（离线文档）
+## 文档（本仓库）
 
-本仓库 `skills/bb-browser/` 下的 Markdown 与 CLI **`guide`** 同源（构建时嵌入二进制）。
+人类可读说明见本仓库 **`skills/bb-browser/`**（`SKILL.md` 与 `references/*.md`），供 Agent skill 或本地阅读。
 
-```bash
-bb-browser guide                      # 主文档（SKILL.md 正文）
-bb-browser guide site-system          # references/site-system.md
-bb-browser guide list                 # 列出可用主题
-```
+## Adapter 脚本（`run`）
 
-## Site 系统（adapter）
-
-与社区 [bb-sites](https://github.com/epiral/bb-sites) 相同思路：adapter 为带 `/* @meta ... */` 的 JS，在**页面上下文**执行。
+带可选 `/* @meta ... */` 的 JS，由 daemon 在**页面上下文**里 **`eval`**（async IIFE），可复用 Cookie / 登录态。
 
 ```bash
-bb-browser site list
-bb-browser site search zhihu
-bb-browser site run platform/command "arg1"
-bb-browser site platform/command "arg1" --flag value   # 省略 run 的简写
-bb-browser site update    # 打印如何把 bb-sites 放进 ~/.bb-browser/sites
+bb-browser run ./path/to/adapter.js "位置参数1" --title "x"
+bb-browser run ~/.bb-browser/sites/demo/foo.js hello --json
 ```
 
-仅扫描 **`~/.bb-browser/sites/`**（递归）；可将社区仓库克隆到该路径下或把 `.js` 放进子目录。
-
-详见 [references/site-system.md](references/site-system.md)。
+脚本路径为**文件系统路径**（相对或绝对）；`@meta` 中的 **`domain`** 用于在未指定 `--tab` 时自动挑选或新建标签页（见 [references/site-system.md](references/site-system.md)）。
 
 ## fetch — 页面内 fetch（带登录态）
 
@@ -125,7 +114,7 @@ bb-browser health
 
 底层为 **JSON-RPC 2.0**，`POST /v1`，方法名见 daemon 实现（如 `snapshot`、`fetch`、`network_route`）。详见 [references/daemon-jsonrpc.md](references/daemon-jsonrpc.md)。
 
-## 与 Node bb-browser skill 的差异（当前）
+## 当前 CLI 限制
 
 - **无 `trace start/stop`**、**无 `--mcp`**：若需要，应在 go-bb-browser 仓库跟进实现后再更新本 skill。
 - **`network requests --with-body`**：daemon 侧当前以精简字段为主；完整请求/响应体需后续 CDP 增强。
@@ -134,8 +123,8 @@ bb-browser health
 
 | 文档 | 说明 |
 |------|------|
-| [references/site-system.md](references/site-system.md) | Site 与 `~/.bb-browser` 目录、自动 tab |
-| [references/adapter-development.md](references/adapter-development.md) | 自定义 adapter、与 `bb-sites` 的关系 |
+| [references/script-system.md](references/script-system.md) | `run`、@meta、`domain` 与自动 tab |
+| [references/adapter-development.md](references/adapter-development.md) | 自定义 adapter |
 | [references/fetch-and-network.md](references/fetch-and-network.md) | `fetch` 与 `network` 子命令、JSON-RPC 对应关系 |
 | [references/snapshot-refs.md](references/snapshot-refs.md) | `@ref` 与 `__bb_snap_ref` |
 | [references/daemon-jsonrpc.md](references/daemon-jsonrpc.md) | `POST /v1` 方法表（Agent 直连） |

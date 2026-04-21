@@ -11,14 +11,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/yiplee/go-bb-browser/internal/guidebook"
 	"github.com/yiplee/go-bb-browser/internal/protocol"
 	"github.com/yiplee/go-bb-browser/internal/site"
 )
@@ -42,7 +40,7 @@ func newRootCmd() *cobra.Command {
 		Short: "CLI for bb-browserd (bb-browser–style UX over JSON-RPC)",
 		Long: strings.TrimSpace(`
 HTTP client for the local bb-browserd daemon. Commands mirror the bb-browser skill:
-open/snapshot/click/fill with @refs, fetch (in-page), network route/unroute/clear, and site adapters from ~/.bb-browser/sites.
+open/snapshot/click/fill with @refs, fetch (in-page), network route/unroute/clear, and run (eval adapter JS from a file path).
 
 Requires Chrome with remote debugging and a running bb-browserd (see README).`),
 	}
@@ -69,45 +67,10 @@ Requires Chrome with remote debugging and a running bb-browserd (see README).`),
 		newNetworkCmd(),
 		newObsCmd("console", protocol.MethodConsole, protocol.MethodConsoleClear, "Console log buffer (or --clear)"),
 		newObsCmd("errors", protocol.MethodErrors, protocol.MethodErrorsClear, "JS error / log buffer (or --clear)"),
-		newSiteCmd(),
-		newGuideCmd(),
+		newRunCmd(),
 	)
 
 	return root
-}
-
-func newGuideCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "guide [topic]",
-		Short: "Print embedded Markdown guide from skills/bb-browser (offline)",
-		Long: strings.TrimSpace(`
-Without a topic, prints the main skill document. With "list", prints available reference names.
-Examples: guide, guide site-system, guide fetch-and-network, guide list.
-The text is embedded at build time from skills/bb-browser/ and internal/guidebook/files/bb-browser/.`),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			topic := "skill"
-			if len(args) > 0 {
-				topic = strings.TrimSpace(args[0])
-			}
-			if topic == "list" {
-				names, err := guidebook.TopicNames()
-				if err != nil {
-					return err
-				}
-				fmt.Println(strings.Join(names, "\n"))
-				return nil
-			}
-			b, err := guidebook.Read(topic)
-			if err != nil {
-				return fmt.Errorf("%w (try: bb-browser guide list)", err)
-			}
-			_, _ = os.Stdout.Write(b)
-			if len(b) > 0 && b[len(b)-1] != '\n' {
-				fmt.Println()
-			}
-			return nil
-		},
-	}
 }
 
 func newHealthCmd() *cobra.Command {
@@ -892,83 +855,20 @@ func newNetworkCmd() *cobra.Command {
 	return net
 }
 
-func newSiteCmd() *cobra.Command {
-	root := &cobra.Command{
-		Use:   "site",
-		Short: "Discover and run adapters under ~/.bb-browser/sites (eval JSON-RPC)",
-	}
-
-	list := &cobra.Command{
-		Use:   "list",
-		Short: "List adapters under ~/.bb-browser/sites",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			all, err := site.Discover()
-			if err != nil {
-				return err
-			}
-			if jsonOut {
-				b, err := json.MarshalIndent(all, "", "  ")
-				if err != nil {
-					return err
-				}
-				fmt.Println(string(b))
-				return nil
-			}
-			for _, a := range all {
-				fmt.Printf("%s\t%s\t%s\n", a.Name, a.Domain, a.Description)
-			}
-			return nil
-		},
-	}
-
-	search := &cobra.Command{
-		Use:   "search QUERY",
-		Short: "Search adapters by name/description/domain",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			all, err := site.Discover()
-			if err != nil {
-				return err
-			}
-			out := site.Search(all, args[0])
-			if jsonOut {
-				b, err := json.MarshalIndent(out, "", "  ")
-				if err != nil {
-					return err
-				}
-				fmt.Println(string(b))
-				return nil
-			}
-			for _, a := range out {
-				fmt.Printf("%s\t%s\n", a.Name, a.Description)
-			}
-			return nil
-		},
-	}
-
-	run := &cobra.Command{
-		Use:   "run NAME [args...]",
-		Short: "Load adapter JS and run via eval (async)",
-		Args:  cobra.MinimumNArgs(1),
+func newRunCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "run SCRIPT.js [args...]",
+		Short: "Run an adapter JS file in the page via eval (async)",
+		Long: strings.TrimSpace(`
+First argument is a path to a .js file. Remaining tokens are passed to the script:
+positional arguments map to @meta "args" keys in JSON source order, then arg1, arg2, …;
+use --name value or --name=value for named flags (see references/site-system.md).`),
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, cancel := context.WithTimeout(cmd.Context(), 180*time.Second)
 			defer cancel()
-			name := strings.TrimSpace(args[0])
-			all, err := site.Discover()
-			if err != nil {
-				return err
-			}
-			var meta *site.AdapterMeta
-			for i := range all {
-				if all[i].Name == name {
-					meta = &all[i]
-					break
-				}
-			}
-			if meta == nil {
-				return fmt.Errorf("unknown adapter %q (try: site list)", name)
-			}
-			raw, err := os.ReadFile(meta.Path)
+			scriptPath := strings.TrimSpace(args[0])
+			raw, meta, err := site.ReadAdapterFile(scriptPath)
 			if err != nil {
 				return err
 			}
@@ -1008,20 +908,7 @@ func newSiteCmd() *cobra.Command {
 				return err
 			}
 
-			var script string
-			if meta.Name == "google/search" {
-				q, num, err := site.ParseGoogleSearchArgs(argsJSON)
-				if err != nil {
-					return err
-				}
-				serp := fmt.Sprintf("https://www.google.com/search?q=%s&num=%d", url.QueryEscape(q), num)
-				if err := cmdRPC(ctx, baseURL, jsonOut, protocol.MethodGoto, map[string]any{"tab": tab, "url": serp}); err != nil {
-					return err
-				}
-				script = site.GoogleSearchDomProgram(string(argsJSON))
-			} else {
-				script = site.RunScript(raw, string(argsJSON))
-			}
+			script := site.RunScript(raw, string(argsJSON))
 
 			b, err := postRPC(ctx, baseURL, protocol.MethodEval, map[string]any{"tab": tab, "script": script})
 			if err != nil {
@@ -1044,49 +931,6 @@ func newSiteCmd() *cobra.Command {
 			return nil
 		},
 	}
-
-	update := &cobra.Command{
-		Use:   "update [PATH]",
-		Short: "Print instructions to get epiral/bb-sites into ~/.bb-browser/sites",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return err
-			}
-			dest := filepath.Join(home, ".bb-browser", "sites")
-			if len(args) > 0 && strings.TrimSpace(args[0]) != "" {
-				dest = strings.TrimSpace(args[0])
-			}
-			fmt.Fprintf(os.Stderr, "Only ~/.bb-browser/sites is scanned. Example:\n  git clone https://github.com/epiral/bb-sites %s\n  # or copy individual .js files into that tree\n", dest)
-			return nil
-		},
-	}
-
-	root.AddCommand(list, search, run, update)
-
-	// bb-browser site twitter/search … (no explicit `run` subcommand).
-	root.Run = func(cmd *cobra.Command, args []string) {
-		if len(args) == 0 {
-			_ = cmd.Help()
-			return
-		}
-		// Do not call run.ExecuteContext: Cobra runs ExecuteC on the root when the
-		// command has a parent, which would re-parse os.Args, hit `site` again, and recurse.
-		run.SetContext(cmd.Context())
-		if run.Args != nil {
-			if err := run.Args(run, args); err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
-		}
-		if err := run.RunE(run, args); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-	}
-
-	return root
 }
 
 var loginHintRe = regexp.MustCompile(`(?i)401|403|unauthorized|forbidden|not\s*logged|login\s*required|sign\s*in|auth`)
@@ -1181,7 +1025,7 @@ func pickTabForSite(ctx context.Context, domain string) (string, error) {
 		out = strings.TrimSpace(env2.Result.Tab)
 	}
 	if out == "" {
-		return "", errors.New("could not resolve tab after opening site")
+		return "", errors.New("could not resolve tab after opening domain tab")
 	}
 	return out, nil
 }

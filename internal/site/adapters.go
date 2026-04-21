@@ -3,16 +3,13 @@ package site
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io/fs"
 	"os"
-	"path/filepath"
 	"regexp"
-	"sort"
-	"strings"
 )
 
-// AdapterMeta is minimal metadata read from an adapter file (bb-sites style).
+// AdapterMeta is minimal metadata read from an adapter file (@meta JSON in JS).
 type AdapterMeta struct {
 	Name        string            `json:"name"`
 	Description string            `json:"description"`
@@ -30,46 +27,31 @@ type ArgDef struct {
 
 var metaBlock = regexp.MustCompile(`(?s)/\*\s*@meta\s*(\{.*?\})\s*\*/`)
 
-// Discover scans only ~/.bb-browser/sites (recursive).
-func Discover() ([]AdapterMeta, error) {
-	home, err := os.UserHomeDir()
+// ErrNoMeta means the script has no @meta block.
+var ErrNoMeta = errors.New("no @meta block")
+
+// ReadAdapterFile reads a JS adapter from path and parses @meta when present.
+// Missing @meta returns empty AdapterMeta and no error.
+func ReadAdapterFile(path string) ([]byte, AdapterMeta, error) {
+	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, AdapterMeta{}, err
 	}
-	dir := filepath.Join(home, ".bb-browser", "sites")
-	byName := make(map[string]AdapterMeta)
-	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		if !strings.HasSuffix(strings.ToLower(path), ".js") {
-			return nil
-		}
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return nil
-		}
-		m, err := parseMeta(raw)
-		if err != nil || m.Name == "" {
-			return nil
-		}
-		m.Path = path
-		byName[m.Name] = m
-		return nil
-	})
-	out := make([]AdapterMeta, 0, len(byName))
-	for _, m := range byName {
-		out = append(out, m)
+	meta, err := parseMeta(raw)
+	if errors.Is(err, ErrNoMeta) {
+		return raw, AdapterMeta{}, nil
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out, nil
+	if err != nil {
+		return raw, AdapterMeta{}, err
+	}
+	return raw, meta, nil
 }
 
 func parseMeta(src []byte) (AdapterMeta, error) {
 	var z AdapterMeta
 	m := metaBlock.FindSubmatch(src)
 	if len(m) < 2 {
-		return z, fmt.Errorf("no @meta block")
+		return z, ErrNoMeta
 	}
 	if err := json.Unmarshal(m[1], &z); err != nil {
 		return z, err
@@ -78,7 +60,7 @@ func parseMeta(src []byte) (AdapterMeta, error) {
 }
 
 // ArgKeysFromAdapterSource returns @meta "args" keys in JSON source order so CLI
-// positionals can match bb-sites adapters (e.g. google/search expects args.query).
+// positionals map to @meta "args" keys in JSON source order, then arg1, arg2, …
 func ArgKeysFromAdapterSource(src []byte) []string {
 	m := metaBlock.FindSubmatch(src)
 	if len(m) < 2 {
@@ -135,21 +117,4 @@ func argsObjectKeysInOrder(objJSON []byte) ([]string, error) {
 			return nil, err
 		}
 	}
-}
-
-// Search filters adapters by substring on name, description, domain.
-func Search(all []AdapterMeta, query string) []AdapterMeta {
-	q := strings.ToLower(strings.TrimSpace(query))
-	if q == "" {
-		return all
-	}
-	var out []AdapterMeta
-	for _, a := range all {
-		if strings.Contains(strings.ToLower(a.Name), q) ||
-			strings.Contains(strings.ToLower(a.Description), q) ||
-			strings.Contains(strings.ToLower(a.Domain), q) {
-			out = append(out, a)
-		}
-	}
-	return out
 }

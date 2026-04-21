@@ -2,11 +2,23 @@ package site
 
 import (
 	"bytes"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestReadAdapterFile_noMeta(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "x.js")
+	if err := os.WriteFile(path, []byte("async function(args){}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, meta, err := ReadAdapterFile(path)
+	if err != nil || meta.Name != "" || meta.Domain != "" {
+		t.Fatalf("meta=%+v err=%v", meta, err)
+	}
+}
 
 func TestParseMeta(t *testing.T) {
 	src := []byte(`/* @meta
@@ -22,7 +34,7 @@ func TestParseMeta(t *testing.T) {
 func TestArgKeysFromAdapterSource_order(t *testing.T) {
 	src := []byte(`/* @meta
 {
- "name": "google/search",
+ "name": "demo/search",
  "args": {
  "query": {"required": true},
  "count": {"required": false}
@@ -51,14 +63,6 @@ func TestArgsObject_metaPositional(t *testing.T) {
 	}
 	if !strings.Contains(string(b), `"query":"bitcoin"`) || !strings.Contains(string(b), `"arg1":"bitcoin"`) {
 		t.Fatalf("%s", b)
-	}
-}
-
-func TestDiscoverMissingDir(t *testing.T) {
-	t.Setenv("HOME", filepath.Join(t.TempDir(), "nosuch"))
-	_, err := Discover()
-	if err != nil {
-		t.Fatal(err)
 	}
 }
 
