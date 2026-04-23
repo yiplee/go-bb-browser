@@ -49,7 +49,7 @@ bb-browser run ./path/to/adapter.js "位置参数1" --title "x"
 bb-browser run ~/.bb-browser/sites/demo/foo.js hello --json
 ```
 
-脚本路径为**文件系统路径**（相对或绝对）；`@meta` 中的 **`domain`** 用于在未指定 `--tab` 时自动挑选或新建标签页（见 [references/site-system.md](references/site-system.md)）。
+脚本路径为**文件系统路径**（相对或绝对）；`@meta` 中的 **`domain`** 用于在未指定 `--tab` 时自动挑选或新建标签页（见 [references/script-system.md](references/script-system.md)）。
 
 ## fetch — 页面内 fetch（带登录态）
 
