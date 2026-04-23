@@ -862,7 +862,7 @@ func newRunCmd() *cobra.Command {
 		Long: strings.TrimSpace(`
 First argument is a path to a .js file. Remaining tokens are passed to the script:
 positional arguments map to @meta "args" keys in JSON source order, then arg1, arg2, …;
-use --name value or --name=value for named flags (see references/site-system.md).`),
+use --name value or --name=value for named flags (see references/script-system.md).`),
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, cancel := context.WithTimeout(cmd.Context(), 180*time.Second)
