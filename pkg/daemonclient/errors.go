@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/yiplee/go-bb-browser/internal/protocol"
+	"github.com/yiplee/go-bb-browser/pkg/protocol"
 )
 
 // RPCError is a JSON-RPC 2.0 error returned in the response body (HTTP 200).

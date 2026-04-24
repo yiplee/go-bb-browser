@@ -9,7 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/yiplee/go-bb-browser/internal/protocol"
+	"github.com/yiplee/go-bb-browser/pkg/protocol"
 )
 
 func TestHealth_ok(t *testing.T) {

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/yiplee/go-bb-browser/internal/protocol"
+	"github.com/yiplee/go-bb-browser/pkg/protocol"
 )
 
 // Client talks to bb-browserd over HTTP (JSON-RPC POST /v1).

@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/chromedp/cdproto/target"
-	"github.com/yiplee/go-bb-browser/internal/protocol"
+	"github.com/yiplee/go-bb-browser/pkg/protocol"
 )
 
 func TestV1NetworkSinceAndCursor(t *testing.T) {

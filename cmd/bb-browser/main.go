@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/yiplee/go-bb-browser/internal/protocol"
+	"github.com/yiplee/go-bb-browser/pkg/protocol"
 	"github.com/yiplee/go-bb-browser/internal/site"
 )
 

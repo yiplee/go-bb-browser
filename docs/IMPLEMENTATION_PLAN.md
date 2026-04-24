@@ -81,7 +81,7 @@ flowchart LR
    - 各 action 的专用字段（URL、选择器、键入文本等）
 3. **观测层**：`seq`、`cursor`、错误结构 `{ error, hint, action }`（UX 规范可照 AGENTS.md）。
 
-### 3.2 `internal/protocol` 包
+### 3.2 `pkg/protocol` 包
 
 - **Action 枚举**：与上游功能集逐步对齐（`tab_list`、`tab_new`、`open`、`snapshot`、`click`、`fill`、`eval`、`network`、`console`…）。
 - **类型定义**：Request/Response 用 **显式 struct + `json` tag**；避免 `map[string]any` 充斥业务路径。
@@ -105,7 +105,6 @@ go-bb-browser/
     bb-browser/          # CLI 入口（或沿用上游命令名）
     bb-browserd/         # daemon 入口（可选与 CLI 同 binary 子命令）
   internal/
-    protocol/            # 请求/响应类型、action 常量、校验
     daemon/
       server.go          # HTTP server、中间件、鉴权钩子（可选）
       dispatch.go        # action -> handler
@@ -119,13 +118,15 @@ go-bb-browser/
       ringbuf.go         # 环形缓冲与 since 过滤（INV-5）
       subscribers.go     # CDP 事件订阅与归类
     cdphooks/            # Network / Log / Runtime 事件绑定（可选拆分）
+  pkg/
+    protocol/            # 请求/响应类型、JSON-RPC 常量（对外可 import）
   docs/
     IMPLEMENTATION_PLAN.md
 ```
 
 **依赖边界**：
 
-- `cmd/*` 只依赖 `internal/daemon`、`internal/protocol`。
+- `cmd/*` 依赖 `internal/daemon`、`pkg/protocol`（或其它 `pkg/*` 客户端库）。
 - `daemon` 依赖 `browser` + `state`，不要反向依赖。
 - CDP 细节封装在 `internal/browser`，避免泄漏到 CLI。
 

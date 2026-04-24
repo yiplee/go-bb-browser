@@ -10,7 +10,7 @@ import (
 
 	"github.com/chromedp/cdproto/target"
 	"github.com/yiplee/go-bb-browser/internal/browser"
-	"github.com/yiplee/go-bb-browser/internal/protocol"
+	"github.com/yiplee/go-bb-browser/pkg/protocol"
 	"github.com/yiplee/go-bb-browser/internal/state"
 )
 

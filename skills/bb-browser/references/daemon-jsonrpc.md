@@ -33,7 +33,7 @@
 | `errors` | `tab`, `since?` | 同观测结构 |
 | `errors_clear` | `tab` | `seq` |
 
-字段名以 **`internal/protocol`** 为准；扩展新方法时同步更新本文件与 **SKILL.md**。
+字段名以 **`pkg/protocol`** 为准；扩展新方法时同步更新本文件与 **SKILL.md**。
 
 ## 观测类语义
 
