@@ -1,6 +1,6 @@
 # Adapter 开发（go-bb-browser）
 
-推荐流程：**逆向网络 → eval 验证 → 写 adapter JS → 放入 `~/.bb-browser/sites/`**。
+推荐流程：**逆向网络 → eval 验证 → 写 adapter JS**。
 
 下列命令对应 **go-bb-browser CLI**：
 
@@ -60,10 +60,5 @@ CLI 在 `error`/`hint` 文本匹配到 401、403、unauthorized、login、sign i
 ## 4. 本地测试
 
 ```bash
-cp my.js ~/.bb-browser/sites/demo/test.js
-bb-browser run ~/.bb-browser/sites/demo/test.js "hello" --json
+bb-browser run my.js "hello" --json
 ```
-
-## 5. 分发
-
-将 `.js` 放在任意路径，用 **`bb-browser run <路径>`** 调用即可；`~/.bb-browser/sites/` 仅作为常见存放目录约定。
