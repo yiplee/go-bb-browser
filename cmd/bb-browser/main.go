@@ -51,6 +51,7 @@ Requires Chrome with remote debugging and a running bb-browserd (see README).`),
 
 	root.AddCommand(
 		newHealthCmd(),
+		newLaunchCmd(),
 		newOpenCmd(),
 		newTabCmd(),
 		newSnapshotCmd(),

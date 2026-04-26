@@ -27,6 +27,13 @@ All **`POST /v1`** responses use **HTTP 200** with a JSON-RPC object (check `err
 
 ```bash
 go build -o bb-browserd ./cmd/bb-browserd
+go build -o bb-browser  ./cmd/bb-browser
+
+# Optional helper: launch Google Chrome with CDP enabled and a persistent profile.
+# Works on Linux, macOS, and Windows. Prints the debugger host:port on success.
+./bb-browser launch                       # default port 9222, default profile dir
+./bb-browser launch --port 9333 --profile /tmp/chrome-prof https://example.com
+
 ./bb-browserd --debugger-url 127.0.0.1:9222
 # IPv6 loopback also works (bare ::1:9222 is normalized to [::1]:9222)
 # GET http://127.0.0.1:8787/health → {"status":"ok"}
