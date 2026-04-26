@@ -16,9 +16,10 @@ import (
 	"strings"
 	"time"
 
+	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown/v2"
 	"github.com/spf13/cobra"
-	"github.com/yiplee/go-bb-browser/pkg/protocol"
 	"github.com/yiplee/go-bb-browser/internal/site"
+	"github.com/yiplee/go-bb-browser/pkg/protocol"
 )
 
 var (
@@ -484,19 +485,65 @@ func newScreenshotCmd() *cobra.Command {
 	return c
 }
 
+// jsHTMLVisibleOnly builds a new <html> tree by cloning only nodes that are not CSS-hidden
+// (display:none, visibility:hidden/collapse, opacity:0). Skips script/style/noscript/template;
+// always keeps TITLE. Not viewport-based (does not use IntersectionObserver).
+const jsHTMLVisibleOnly = `(function(){
+function isSkipped(el){
+if(el.nodeType!==1)return false;
+var t=el.tagName;
+if(t==="TITLE")return false;
+if(t==="SCRIPT"||t==="STYLE"||t==="NOSCRIPT"||t==="TEMPLATE")return true;
+var s=getComputedStyle(el);
+if(s.display==="none"||s.visibility==="hidden"||s.visibility==="collapse")return true;
+if(parseFloat(s.opacity)===0)return true;
+return false;
+}
+function appendVisibleChildren(srcParent,dstParent){
+for(var i=0;i<srcParent.childNodes.length;i++){
+var child=srcParent.childNodes[i];
+if(child.nodeType===3){dstParent.appendChild(child.cloneNode(false));continue;}
+if(child.nodeType!==1)continue;
+if(isSkipped(child))continue;
+var clone=child.cloneNode(false);
+dstParent.appendChild(clone);
+appendVisibleChildren(child,clone);
+}
+}
+var html=document.createElement("html");
+for(var j=0;j<document.documentElement.attributes.length;j++){
+var a=document.documentElement.attributes[j];
+html.setAttribute(a.name,a.value);
+}
+appendVisibleChildren(document.documentElement,html);
+return html.outerHTML;
+})()`
+
 func newHtmlCmd() *cobra.Command {
-	var outPath string
+	var outPath, format string
+	var visibleOnly bool
 	c := &cobra.Command{
 		Use:   "html",
-		Short: "Print the tab's rendered HTML (document.documentElement.outerHTML via eval)",
+		Short: "Print the tab's rendered HTML (outerHTML via eval; optional --visible-only)",
+		Long: strings.TrimSpace(`
+Print document.documentElement as HTML via eval. With --visible-only, rebuild the DOM tree in-page, omitting subtrees hidden by CSS (display:none, visibility:hidden or collapse, opacity:0) and dropping script/style/noscript/template; TITLE is always kept. This is not viewport-based cropping.
+
+Markdown output (--format markdown) is converted locally in the CLI after eval.`),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, cancel := context.WithTimeout(cmd.Context(), 120*time.Second)
 			defer cancel()
+			outFormat := strings.ToLower(strings.TrimSpace(format))
+			if outFormat != "html" && outFormat != "markdown" {
+				return fmt.Errorf("invalid --format %q (want html or markdown)", format)
+			}
 			tab, err := effectiveTab(ctx, baseURL, tabFlag)
 			if err != nil {
 				return err
 			}
 			script := `(function(){return document.documentElement.outerHTML})()`
+			if visibleOnly {
+				script = jsHTMLVisibleOnly
+			}
 			if jsonOut {
 				return cmdRPC(ctx, baseURL, true, protocol.MethodEval, map[string]any{"tab": tab, "script": script})
 			}
@@ -517,17 +564,27 @@ func newHtmlCmd() *cobra.Command {
 			if err := json.Unmarshal(env.Result.Result, &html); err != nil {
 				return fmt.Errorf("decode eval result as HTML string: %w", err)
 			}
-			if outPath != "" {
-				return os.WriteFile(outPath, []byte(html), 0o644)
+			body := html
+			if outFormat == "markdown" {
+				md, err := htmltomarkdown.ConvertString(html)
+				if err != nil {
+					return fmt.Errorf("convert html to markdown: %w", err)
+				}
+				body = md
 			}
-			fmt.Print(html)
-			if !strings.HasSuffix(html, "\n") {
+			if outPath != "" {
+				return os.WriteFile(outPath, []byte(body), 0o644)
+			}
+			fmt.Print(body)
+			if !strings.HasSuffix(body, "\n") {
 				fmt.Println()
 			}
 			return nil
 		},
 	}
-	c.Flags().StringVar(&outPath, "output", "", "write HTML to file instead of stdout")
+	c.Flags().StringVarP(&outPath, "output", "o", "", "write result to file instead of stdout (HTML or markdown per --format)")
+	c.Flags().StringVar(&format, "format", "html", "output format: html or markdown (ignored with --json, which returns raw eval HTML)")
+	c.Flags().BoolVar(&visibleOnly, "visible-only", false, "omit CSS-hidden subtrees (see command long description); applies to eval script and thus to --json output")
 	return c
 }
 

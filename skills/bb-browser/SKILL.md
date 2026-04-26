@@ -107,8 +107,14 @@ bb-browser errors [filter] [--clear]
 ```bash
 bb-browser eval 'document.title'
 bb-browser screenshot [path.png]
+bb-browser html                              # 打印当前 tab 的 outerHTML
+bb-browser html --visible-only               # 去掉 CSS 隐藏子树（非按视口裁剪）
+bb-browser html --format markdown            # CLI 端转成 Markdown 输出（github.com/JohannesKaufmann/html-to-markdown/v2）
+bb-browser html --format markdown -o out.md  # 写入文件（`-o` / `--output`）
 bb-browser health
 ```
+
+`html` 仍通过 daemon 的 **`eval`** 取 HTML（默认整页 `outerHTML`；**`--visible-only`** 时在页面内重建可见子树再序列化）。**Markdown 在 CLI 本地转换**，JSON-RPC 不变。`--json` 透传 **`eval`** 的原始 JSON 结果（**不**应用 `--format`）；**`--visible-only` 仍会改变 `eval` 返回的 HTML 字符串**。
 
 ## HTTP API（Agent 直连 daemon）
 
