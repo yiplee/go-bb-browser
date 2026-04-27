@@ -1,6 +1,6 @@
 # daemonclient
 
-`daemonclient` 是 **bb-browserd** 的 Go HTTP 客户端：通过 **JSON-RPC 2.0** 调用 `POST /v1`，并通过 **GET /health** 做存活检查。协议字段与 **`pkg/protocol`**（包名 `protocol`）中的类型、方法名一致，与仓库根目录 `AGENTS.md` 中描述的守护进程行为对齐（短 tab id、全局单调 `seq`、观测类接口的 `cursor` 等）。
+`daemonclient` 是 **bb-daemon** 的 Go HTTP 客户端：通过 **JSON-RPC 2.0** 调用 `POST /v1`，并通过 **GET /health** 做存活检查。协议字段与 **`pkg/protocol`**（包名 `protocol`）中的类型、方法名一致，与仓库根目录 `AGENTS.md` 中描述的守护进程行为对齐（短 tab id、全局单调 `seq`、观测类接口的 `cursor` 等）。
 
 ## 适用场景
 
@@ -142,7 +142,7 @@ if errors.As(err, &re) {
 ## 与本仓库其它部分的关系
 
 - **协议真相源**：`pkg/protocol/jsonrpc.go`（方法名、params/result 形状、错误码、`ErrData`）。
-- **守护进程**：`cmd/bb-browserd`；HTTP 与 JSON-RPC 分发在 `internal/daemon` 等包中实现。
+- **守护进程**：`cmd/bb-daemon`；HTTP 与 JSON-RPC 分发在 `internal/daemon` 等包中实现。
 - **测试**：见 `client_test.go`（`httptest` 模拟 `/health` 与 `/v1`）。
 
 ## 简短示例

@@ -13,7 +13,7 @@ import (
 	"github.com/yiplee/go-bb-browser/pkg/protocol"
 )
 
-// Client talks to bb-browserd over HTTP (JSON-RPC POST /v1).
+// Client talks to bb-daemon over HTTP (JSON-RPC POST /v1).
 type Client struct {
 	BaseURL string
 	HTTP    *http.Client

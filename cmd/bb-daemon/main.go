@@ -12,14 +12,29 @@ import (
 	"github.com/yiplee/go-bb-browser/internal/daemon"
 )
 
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func main() {
 	os.Exit(run())
 }
 
 func run() int {
+	var showVersion bool
+	flag.BoolVar(&showVersion, "version", false, "print version and exit")
+	flag.BoolVar(&showVersion, "v", false, "print version and exit (shorthand)")
+
 	debuggerURL := flag.String("debugger-url", envOrDefault("BB_BROWSER_DEBUGGER_URL", ""), "Chrome DevTools endpoint (ws/http URL or host:port); required")
 	listen := flag.String("listen", envOrDefault("BB_BROWSER_LISTEN", daemon.DefaultListenAddr), "HTTP listen address for the daemon API")
 	flag.Parse()
+
+	if showVersion {
+		fmt.Printf("bb-daemon %s (commit %s, built %s)\n", version, commit, date)
+		return 0
+	}
 
 	cfg := daemon.Config{
 		DebuggerURL: *debuggerURL,

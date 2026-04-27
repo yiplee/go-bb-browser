@@ -103,7 +103,7 @@ flowchart LR
 go-bb-browser/
   cmd/
     bb-browser/          # CLI 入口（或沿用上游命令名）
-    bb-browserd/         # daemon 入口（可选与 CLI 同 binary 子命令）
+    bb-daemon/           # daemon 入口（可选与 CLI 同 binary 子命令）
   internal/
     daemon/
       server.go          # HTTP server、中间件、鉴权钩子（可选）

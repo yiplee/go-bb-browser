@@ -1,6 +1,6 @@
 ---
 name: bb-browser
-description: 强大的信息获取与浏览器自动化工具（Go 实现）。CLI 连接本地 bb-browserd（JSON-RPC），daemon 仅通过 Chrome DevTools Protocol 附加用户已启动的 Chrome，复用登录态。支持快照与 @ref、带 Cookie 的 fetch、网络观测与拦截 mock、`run`（对 adapter `.js` 做页面内 eval）等。
+description: 强大的信息获取与浏览器自动化工具（Go 实现）。CLI 连接本地 bb-daemon（JSON-RPC），daemon 仅通过 Chrome DevTools Protocol 附加用户已启动的 Chrome，复用登录态。支持快照与 @ref、带 Cookie 的 fetch、网络观测与拦截 mock、`run`（对 adapter `.js` 做页面内 eval）等。
 allowed-tools: Bash(bb-browser:*)
 ---
 
@@ -11,10 +11,10 @@ allowed-tools: Bash(bb-browser:*)
 ## 架构
 
 ```
-CLI (bb-browser)  →  HTTP bb-browserd (POST /v1 JSON-RPC)  →  Chrome（仅 CDP 附加）
+CLI (bb-browser)  →  HTTP bb-daemon (POST /v1 JSON-RPC)  →  Chrome（仅 CDP 附加）
 ```
 
-- **daemon 不启动 Chrome**：用户需自行用 `--remote-debugging-port`（等）启动 Chrome，再启动 `bb-browserd` 指向该调试端口。
+- **daemon 不启动 Chrome**：用户需自行用 `--remote-debugging-port`（等）启动 Chrome，再启动 `bb-daemon` 指向该调试端口。
 - **仅 Google Chrome**，通过 **[chromedp](https://github.com/chromedp/chromedp)** 走 CDP；**无浏览器扩展**。
 - 操作类与观测类响应遵循仓库 `AGENTS.md` 中的不变量：`tab` + 全局单调 `seq`；观测类带 `cursor` / `since`。
 
@@ -22,7 +22,7 @@ CLI (bb-browser)  →  HTTP bb-browserd (POST /v1 JSON-RPC)  →  Chrome（仅 C
 
 ```bash
 # 终端 1：启动 daemon（示例端口见 README）
-bb-browserd --debugger-url 127.0.0.1:9222
+bb-daemon --debugger-url 127.0.0.1:9222
 
 # 终端 2：CLI（默认连 http://127.0.0.1:8787）
 export BB_BROWSER_URL=http://127.0.0.1:8787   # 可选

@@ -35,7 +35,7 @@ func newLaunchCmd() *cobra.Command {
 		Long: strings.TrimSpace(`
 Launch Google Chrome on this machine with --remote-debugging-port enabled, using a
 persistent profile directory. Supports linux, windows, and macos. The daemon
-(bb-browserd) can then attach to the printed debugger endpoint.
+(bb-daemon) can then attach to the printed debugger endpoint.
 
 Examples:
   bb-browser launch
@@ -106,7 +106,7 @@ Examples:
 			endpoint := fmt.Sprintf("%s:%d", bindAddr, port)
 			fmt.Fprintf(os.Stderr, "chrome: pid=%d binary=%s\n", proc.Process.Pid, binary)
 			fmt.Fprintf(os.Stderr, "chrome: profile=%s\n", profileDir)
-			fmt.Fprintf(os.Stderr, "chrome: debugger=%s (use --debugger-url with bb-browserd)\n", endpoint)
+			fmt.Fprintf(os.Stderr, "chrome: debugger=%s (use --debugger-url with bb-daemon)\n", endpoint)
 
 			if waitReady {
 				if err := waitForCDP(ctx, bindAddr, port, readyTO); err != nil {

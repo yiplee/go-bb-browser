@@ -3,7 +3,7 @@
 三个端到端例子，覆盖三层复杂度。所有示例假设：
 
 - 用户已在 Chrome（debugging port 9222）登录目标站；
-- `bb-browserd` 已 attach 到该端口；
+- `bb-daemon` 已 attach 到该端口；
 - 把 `.js` 存到任意路径（如 `~/adapters/…`），用 `bb-browser run <path>` 调用。
 
 CLI 调用惯例（与 `SKILL.md` 的参数映射对应）：

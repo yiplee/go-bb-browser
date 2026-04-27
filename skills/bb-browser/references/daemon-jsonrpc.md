@@ -1,4 +1,4 @@
-# bb-browserd JSON-RPC（POST /v1）
+# bb-daemon JSON-RPC（POST /v1）
 
 单请求对象：`jsonrpc: "2.0"`、`method`、`params`（对象）、`id`。  
 响应：`result` 或 `error`（含 `code`、`message`、可选 `data`）。

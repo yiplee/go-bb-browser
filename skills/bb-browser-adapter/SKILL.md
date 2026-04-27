@@ -1,6 +1,6 @@
 ---
 name: bb-browser-adapter
-description: 专门指导在 go-bb-browser 上开发 adapter 脚本（`bb-browser run ./x.js`）的技能。Use when the user authors, modifies, or debugs an adapter JavaScript file, writes a `/* @meta */` block, maps CLI positional / `--flag` arguments into adapter `args`, reverse-engineers a site's private API for reuse with browser login state, or needs complexity-tier / anti-change patterns (DOM-structural extraction, webpack module discovery, Vue/React state access) against `bb-browserd` JSON-RPC (eval, fetch, network, snapshot).
+description: 专门指导在 go-bb-browser 上开发 adapter 脚本（`bb-browser run ./x.js`）的技能。Use when the user authors, modifies, or debugs an adapter JavaScript file, writes a `/* @meta */` block, maps CLI positional / `--flag` arguments into adapter `args`, reverse-engineers a site's private API for reuse with browser login state, or needs complexity-tier / anti-change patterns (DOM-structural extraction, webpack module discovery, Vue/React state access) against `bb-daemon` JSON-RPC (eval, fetch, network, snapshot).
 allowed-tools: Bash(bb-browser:*)
 ---
 

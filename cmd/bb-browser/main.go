@@ -26,7 +26,15 @@ var (
 	baseURL string
 	jsonOut bool
 	tabFlag string
+
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
 )
+
+func versionString(name string) string {
+	return fmt.Sprintf("%s %s (commit %s, built %s)", name, version, commit, date)
+}
 
 func main() {
 	if err := newRootCmd().Execute(); err != nil {
@@ -37,16 +45,17 @@ func main() {
 
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
-		Use:   "bb-browser",
-		Short: "CLI for bb-browserd (bb-browser–style UX over JSON-RPC)",
+		Use:     "bb-browser",
+		Version: versionString("bb-browser"),
+		Short:   "CLI for bb-daemon (bb-browser–style UX over JSON-RPC)",
 		Long: strings.TrimSpace(`
-HTTP client for the local bb-browserd daemon. Commands mirror the bb-browser skill:
+HTTP client for the local bb-daemon daemon. Commands mirror the bb-browser skill:
 open/snapshot/click/fill with @refs, fetch (in-page), network route/unroute/clear, and run (eval adapter JS from a file path).
 
-Requires Chrome with remote debugging and a running bb-browserd (see README).`),
+Requires Chrome with remote debugging and a running bb-daemon (see README).`),
 	}
 
-	root.PersistentFlags().StringVar(&baseURL, "url", envOrDefault("BB_BROWSER_URL", "http://127.0.0.1:8787"), "bb-browserd base URL (no trailing slash)")
+	root.PersistentFlags().StringVar(&baseURL, "url", envOrDefault("BB_BROWSER_URL", "http://127.0.0.1:8787"), "bb-daemon base URL (no trailing slash)")
 	root.PersistentFlags().BoolVar(&jsonOut, "json", false, "print raw JSON-RPC result (or full envelope for some commands)")
 	root.PersistentFlags().StringVar(&tabFlag, "tab", "", "short tab id; when omitted, uses daemon focused tab from tab_list")
 
@@ -71,6 +80,9 @@ Requires Chrome with remote debugging and a running bb-browserd (see README).`),
 		newObsCmd("errors", protocol.MethodErrors, protocol.MethodErrorsClear, "JS error / log buffer (or --clear)"),
 		newRunCmd(),
 	)
+
+	root.SetVersionTemplate("{{.Version}}\n")
+	root.Flags().BoolP("version", "v", false, "print version and exit")
 
 	return root
 }
