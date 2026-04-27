@@ -31,8 +31,8 @@ go build -o bb-browser  ./cmd/bb-browser
 
 # Optional helper: launch Google Chrome with CDP enabled and a persistent profile.
 # Works on Linux, macOS, and Windows. Prints the debugger host:port on success.
-./bb-browser launch                       # default port 9222, default profile dir
-./bb-browser launch --port 9333 --profile /tmp/chrome-prof https://example.com
+./bb-browser launch                       # default port 9222, profile dir, --start-url about:blank
+./bb-browser launch --port 9333 --profile /tmp/chrome-prof --start-url https://example.com
 
 ./bb-daemon --debugger-url 127.0.0.1:9222
 # IPv6 loopback also works (bare ::1:9222 is normalized to [::1]:9222)

@@ -30,7 +30,7 @@ func newLaunchCmd() *cobra.Command {
 	)
 
 	c := &cobra.Command{
-		Use:   "launch [URL]",
+		Use:   "launch",
 		Short: "Launch Google Chrome with a CDP debugging endpoint and persistent profile",
 		Long: strings.TrimSpace(`
 Launch Google Chrome on this machine with --remote-debugging-port enabled, using a
@@ -39,15 +39,14 @@ persistent profile directory. Supports linux, windows, and macos. The daemon
 
 Examples:
   bb-browser launch
-  bb-browser launch https://example.com
+  bb-browser launch --start-url about:blank
+  bb-browser launch --start-url https://example.com
   bb-browser launch --port 9333 --profile /tmp/chrome-prof
   bb-browser launch --chrome /usr/bin/google-chrome
 `),
-		Args: cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 1 {
-				startURL = strings.TrimSpace(args[0])
-			}
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			startURL = strings.TrimSpace(startURL)
 
 			binary := strings.TrimSpace(chromePath)
 			if binary == "" {
@@ -138,6 +137,7 @@ Examples:
 	c.Flags().BoolVar(&headless, "headless", false, "launch Chrome in --headless=new mode")
 	c.Flags().BoolVar(&detach, "detach", true, "return immediately after Chrome starts (otherwise wait for it to exit)")
 	c.Flags().StringSliceVar(&extraArgs, "extra-arg", nil, "extra argument(s) passed verbatim to Chrome (repeatable)")
+	c.Flags().StringVar(&startURL, "start-url", "about:blank", "URL to open on launch (use empty string to let Chrome decide)")
 	c.Flags().BoolVar(&waitReady, "wait-ready", true, "wait until the CDP endpoint accepts TCP connections before returning")
 	c.Flags().DurationVar(&readyTO, "wait-timeout", 15*time.Second, "timeout for --wait-ready")
 	return c
