@@ -32,3 +32,34 @@ func TestConnectFailureHint(t *testing.T) {
 		t.Fatalf("unexpected hint: %q", got)
 	}
 }
+
+func TestIsStaleTargetErr(t *testing.T) {
+	stale := []string{
+		"No page (-32601)",
+		"No page for session (-32601)",
+		"No target with given id found",
+		"Target not found",
+		"target closed",
+		"No session with given id (-32001)",
+	}
+	for _, s := range stale {
+		if !isStaleTargetErr(errors.New(s)) {
+			t.Errorf("expected stale: %q", s)
+		}
+	}
+	notStale := []string{
+		"",
+		"EOF",
+		"context canceled",
+		"navigation failed: net::ERR_NAME_NOT_RESOLVED",
+	}
+	for _, s := range notStale {
+		var err error
+		if s != "" {
+			err = errors.New(s)
+		}
+		if isStaleTargetErr(err) {
+			t.Errorf("expected not stale: %q", s)
+		}
+	}
+}

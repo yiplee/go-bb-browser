@@ -151,21 +151,37 @@ func Connect(parent context.Context, debuggerURL string) (*Session, error) {
 	// context makes chromedp.RemoteAllocator run Cancel → CloseTarget on open tabs. The
 	// debugging Chrome process should keep running; TCP drops when this process exits.
 	allocCtx, allocCancel := chromedp.NewRemoteAllocator(context.WithoutCancel(parent), base)
-	var ctx context.Context
-	var ctxCancel context.CancelFunc
-	if attachID != "" {
-		// Attach to an existing page/tab; chromedp's default first Run otherwise creates
-		// a new about:blank target (Target.createTarget).
-		ctx, ctxCancel = chromedp.NewContext(allocCtx, chromedp.WithTargetID(attachID))
-	} else {
-		ctx, ctxCancel = chromedp.NewContext(allocCtx)
-	}
+
 	// First Run must use the long-lived chromedp ctx, not a child WithTimeout:
 	// RemoteAllocator starts a goroutine on Allocate that waits on Run's ctx.Done()
 	// then calls chromedp.Cancel — cancelling a timeout child after Connect returns
 	// would tear down the browser session (symptom: later CDP ops return "context canceled").
-	if err := chromedp.Run(ctx); err != nil {
-		ctxCancel()
+	tryRun := func(targetID target.ID) (context.Context, context.CancelFunc, error) {
+		var c context.Context
+		var cancel context.CancelFunc
+		if targetID != "" {
+			// Attach to an existing page/tab; chromedp's default first Run otherwise
+			// creates a new about:blank target (Target.createTarget).
+			c, cancel = chromedp.NewContext(allocCtx, chromedp.WithTargetID(targetID))
+		} else {
+			c, cancel = chromedp.NewContext(allocCtx)
+		}
+		if err := chromedp.Run(c); err != nil {
+			cancel()
+			return nil, nil, err
+		}
+		return c, cancel, nil
+	}
+
+	ctx, ctxCancel, err := tryRun(attachID)
+	if err != nil && attachID != "" && isStaleTargetErr(err) {
+		// Some CDP servers (notably Obscura's /json/list) advertise a page-like
+		// target that doesn't actually exist in their session map. Fall back to
+		// letting chromedp create a fresh target via Target.createTarget so the
+		// daemon can still attach.
+		ctx, ctxCancel, err = tryRun("")
+	}
+	if err != nil {
 		allocCancel()
 		return nil, fmt.Errorf("cdp connect: %w%s", err, connectFailureHint(err))
 	}
@@ -174,6 +190,28 @@ func Connect(parent context.Context, debuggerURL string) (*Session, error) {
 		allocCancel()
 	}
 	return &Session{ctx: ctx, cancel: cancel}, nil
+}
+
+// isStaleTargetErr matches CDP errors raised when attaching to a target id that the
+// remote DevTools host claims exists but its session bookkeeping cannot resolve.
+// Obscura reports "No page" / "No page for session" via its catch-all -32601 wrapper;
+// real Chrome reports variants like "No target with given id" / "Target closed".
+func isStaleTargetErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	m := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(m, "no page"),
+		strings.Contains(m, "no target"),
+		strings.Contains(m, "target not found"),
+		strings.Contains(m, "target closed"),
+		strings.Contains(m, "no session with given id"),
+		strings.Contains(m, "no such target"):
+		return true
+	default:
+		return false
+	}
 }
 
 // Context returns the browser-level chromedp context (lifetime matches the session).
