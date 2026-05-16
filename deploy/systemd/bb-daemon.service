@@ -1,0 +1,26 @@
+[Service]
+Type=simple
+ExecStart=%h/go/bin/bb-daemon --debugger-url http://127.0.0.1:9222
+Restart=on-failure
+RestartSec=2s
+KillSignal=SIGTERM
+TimeoutStopSec=10s
+
+# --- Hardening Adjustments ---
+# These are the most likely culprits for "Operation not permitted" in user mode
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+# 'strict' and 'read-only' on Home/System often fail in user-level namespaces
+# ProtectSystem=strict 
+# ProtectHome=read-only
+
+# These kernel/system tweaks usually require CAP_SYS_ADMIN
+# ProtectKernelTunables=yes
+# ProtectKernelModules=yes
+# ProtectControlGroups=yes
+# LockPersonality=yes
+# RestrictSUIDSGID=yes
+
+# If you need specific writable paths, ensure the parent directories exist
+ReadWritePaths=%h/.local/state/bb-daemon
