@@ -17,15 +17,64 @@ import (
 type Client struct {
 	BaseURL string
 	HTTP    *http.Client
+	// Headers, if non-empty, are applied to every Health and Call request via [http.Header.Set]
+	// (same key with multiple stored values keeps the last in slice order).
+	// WithHeader / WithHeaders merge into this map via [http.Header.Add] (they do not replace each other).
+	Headers http.Header
 
 	id atomic.Uint64
 }
 
+// ClientOption configures a [Client] when passed to [NewClient].
+type ClientOption func(*Client)
+
+// WithHeader returns a [ClientOption] that merges a single header via [http.Header.Add].
+func WithHeader(k, v string) ClientOption {
+	return func(c *Client) {
+		if c.Headers == nil {
+			c.Headers = make(http.Header)
+		}
+		c.Headers.Add(k, v)
+	}
+}
+
+// WithHeaders returns a [ClientOption] that merges all entries from h via [http.Header.Add]
+// (including when combined with [WithHeader] or multiple WithHeaders; later options append).
+func WithHeaders(h http.Header) ClientOption {
+	return func(c *Client) {
+		if len(h) == 0 {
+			return
+		}
+		if c.Headers == nil {
+			c.Headers = make(http.Header)
+		}
+		for key, vals := range h {
+			for _, val := range vals {
+				c.Headers.Add(key, val)
+			}
+		}
+	}
+}
+
 // NewClient returns a client for the given daemon root URL (e.g. http://127.0.0.1:8080).
-func NewClient(baseURL string) *Client {
-	return &Client{
+func NewClient(baseURL string, opts ...ClientOption) *Client {
+	c := &Client{
 		BaseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"),
-		HTTP:    nil,
+	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
+}
+
+func (c *Client) applyHeaders(req *http.Request) {
+	if len(c.Headers) == 0 {
+		return
+	}
+	for k, vv := range c.Headers {
+		for _, v := range vv {
+			req.Header.Set(k, v)
+		}
 	}
 }
 
@@ -52,6 +101,7 @@ func (c *Client) Health(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	c.applyHeaders(req)
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
 		return err
@@ -96,6 +146,7 @@ func (c *Client) Call(ctx context.Context, method string, params any, result any
 	if err != nil {
 		return err
 	}
+	c.applyHeaders(req)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient().Do(req)

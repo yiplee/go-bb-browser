@@ -24,7 +24,20 @@ import (
 c := daemonclient.NewClient("http://127.0.0.1:8080")
 ```
 
-`NewClient` 会去掉首尾空白，并去掉 `BaseURL` 末尾的 `/`。
+`NewClient` 会去掉首尾空白，并去掉 `BaseURL` 末尾的 `/`。第二个及之后的参数为可选的 `ClientOption`，例如为所有请求附加 HTTP 头（鉴权、自定义网关等）：
+
+```go
+import "net/http"
+
+c := daemonclient.NewClient("http://127.0.0.1:8080",
+    daemonclient.WithHeaders(http.Header{
+        "Authorization": []string{"Bearer token"},
+    }),
+    daemonclient.WithHeader("X-Request-Id", "abc"),
+)
+```
+
+`WithHeader` / `WithHeaders` 以及多个同类 option 之间均为**合并**（内部使用 `Header.Add`），不会彼此覆盖。也可在构造后直接操作 `c.Headers`（与 `HTTP` 字段一样，由调用方自行维护该 map）。
 
 可选字段：
 
@@ -32,6 +45,9 @@ c := daemonclient.NewClient("http://127.0.0.1:8080")
 |------|------|
 | `BaseURL` | 守护进程 HTTP 根 URL |
 | `HTTP` | 若非 `nil`，用于所有请求；否则使用 `http.DefaultClient` |
+| `Headers` | 若非空，发往 `Health` / `Call` 时用 `Header.Set` 写入（同一键在 `Headers` 中存多条时，取 slice 中最后一项）；`Call` 随后会 `Set` `Content-Type: application/json`，因此调用方无法覆盖 JSON-RPC 所需的 Content-Type |
+
+`WithHeader(k, v)` 与 `WithHeaders(h)` 把条目合并进 `Headers`（`h` 为空或 `len(h)==0` 时不做任何事）。
 
 每个 `Client` 内部使用单调递增的 JSON-RPC `id`（`uint64` 序列化），与单次调用的业务 `seq` 无关。
 
@@ -43,7 +59,7 @@ if err := c.Health(ctx); err != nil {
 }
 ```
 
-- 请求：`GET {BaseURL}/health`
+- 请求：`GET {BaseURL}/health`（若有 `Client.Headers`，用 `Header.Set` 写入）
 - 成功：HTTP 200（响应体内容当前未解析，仅校验状态码）
 
 ## 通用调用：`Call`
@@ -60,7 +76,7 @@ err := c.Call(ctx, method, params, resultPtr)
 
 行为要点：
 
-- 请求：`POST {BaseURL}/v1`，`Content-Type: application/json`，体为单对象 JSON-RPC 请求（`jsonrpc`、`method`、`params`、`id`）。
+- 请求：`POST {BaseURL}/v1`，先用 `Header.Set` 写入 `Client.Headers` 中的项，再设置 `Content-Type: application/json`，体为单对象 JSON-RPC 请求（`jsonrpc`、`method`、`params`、`id`）。
 - HTTP 层非 200：返回 `*HTTPError`（含状态码与响应体文本）。
 - HTTP 200 且 JSON-RPC 含 `error`：返回 `*RPCError`。
 - HTTP 200、`error` 为空但 `result` 缺失且调用方需要解码：返回 `fmt.Errorf("json-rpc: missing result")`。

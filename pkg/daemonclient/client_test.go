@@ -134,6 +134,74 @@ func TestTabList_wrapper(t *testing.T) {
 	}
 }
 
+func TestWithHeaders_sentOnHealthAndCall(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Test-Token") != "abc" {
+			http.Error(w, "missing token", http.StatusUnauthorized)
+			return
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/health":
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1":
+			b, _ := io.ReadAll(r.Body)
+			var req struct {
+				ID json.RawMessage `json:"id"`
+			}
+			_ = json.Unmarshal(b, &req)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(req.ID) + `,"result":{"seq":1,"tabs":[],"focus":"","tab":""}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, WithHeaders(http.Header{"X-Test-Token": []string{"abc"}}))
+	if err := c.Health(context.Background()); err != nil {
+		t.Fatalf("Health: %v", err)
+	}
+	var got protocol.TabListResult
+	if err := c.Call(context.Background(), protocol.MethodTabList, protocol.TabListParams{}, &got); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if got.Seq != 1 {
+		t.Fatalf("seq: got %d", got.Seq)
+	}
+}
+
+func TestWithHeader_and_WithHeaders_merge(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-A") != "1" || r.Header.Get("X-B") != "2" {
+			http.Error(w, "want both X-A and X-B", http.StatusBadRequest)
+			return
+		}
+		if r.Method == http.MethodGet && r.URL.Path == "/health" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL,
+		WithHeader("X-A", "1"),
+		WithHeaders(http.Header{"X-B": []string{"2"}}),
+	)
+	if err := c.Health(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second WithHeaders must not wipe the first block of options.
+	c2 := NewClient(srv.URL,
+		WithHeaders(http.Header{"X-A": []string{"1"}}),
+		WithHeaders(http.Header{"X-B": []string{"2"}}),
+	)
+	if err := c2.Health(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCall_missingResult(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
