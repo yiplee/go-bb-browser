@@ -14,7 +14,7 @@
 | `tab_list` | `{}` | `tabs[]`, `tab`, `seq`, `focus` |
 | `tab_focus` | `{}` | 当前可操作 tab 元数据 |
 | `tab_select` | `tab` | `tab`, `seq` |
-| `tab_new` | `url?` | 新 `tab`, `seq` |
+| `tab_new` | `url?`, `silent?` | 新 `tab`, `seq`；`silent: true` 后台开 tab，不改变 daemon/浏览器焦点 |
 | `goto` | `tab`, `url` | `tab`, `seq` |
 | `reload` | `tab` | `tab`, `seq` |
 | `tab_close` | `tab` | `tab`, `seq` |

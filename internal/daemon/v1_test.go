@@ -31,7 +31,7 @@ func (f *fakeConn) PageTargets() ([]*target.Info, error) {
 	return f.infos, nil
 }
 
-func (f *fakeConn) CreatePageTarget(initialURL string) (target.ID, error) {
+func (f *fakeConn) CreatePageTarget(initialURL string, _ bool) (target.ID, error) {
 	if f.createErr != nil {
 		return "", f.createErr
 	}
@@ -252,6 +252,75 @@ func TestV1TabSelectUnknownTab(t *testing.T) {
 	}
 	if env.Error.Code != protocol.CodeInvalidParams {
 		t.Fatalf("code %d", env.Error.Code)
+	}
+}
+
+func TestV1TabNewSilentPreservesFocus(t *testing.T) {
+	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(cfg, nil)
+	srv.tabHook = &fakeConn{infos: []*target.Info{
+		{TargetID: "ABCDEF123456", Type: "page", Title: "first", URL: "https://a"},
+	}, createID: "CAFEBABE0001"}
+
+	post := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1", bytes.NewBufferString(body)))
+		return rec
+	}
+
+	rList := post(rpcReq(protocol.MethodTabList, map[string]any{}, 1))
+	if rList.Code != http.StatusOK {
+		t.Fatalf("tab_list %d %s", rList.Code, rList.Body.String())
+	}
+	var listEnv struct {
+		Result protocol.TabListResult `json:"result"`
+	}
+	if err := json.Unmarshal(rList.Body.Bytes(), &listEnv); err != nil {
+		t.Fatal(err)
+	}
+	first := listEnv.Result.Tab
+	if first == "" {
+		t.Fatal("empty first tab")
+	}
+
+	rSel := post(rpcReq(protocol.MethodTabSelect, map[string]string{"tab": first}, 2))
+	if rSel.Code != http.StatusOK {
+		t.Fatalf("tab_select %d %s", rSel.Code, rSel.Body.String())
+	}
+
+	rNew := post(rpcReq(protocol.MethodTabNew, map[string]any{"url": "about:blank", "silent": true}, 3))
+	if rNew.Code != http.StatusOK {
+		t.Fatalf("tab_new %d %s", rNew.Code, rNew.Body.String())
+	}
+	var newEnv struct {
+		Result protocol.TabNewResult `json:"result"`
+	}
+	if err := json.Unmarshal(rNew.Body.Bytes(), &newEnv); err != nil {
+		t.Fatal(err)
+	}
+	if newEnv.Result.Tab == "" {
+		t.Fatal("empty tab from tab_new")
+	}
+	if newEnv.Result.Tab == first {
+		t.Fatalf("silent tab_new returned same tab %q", first)
+	}
+
+	rList2 := post(rpcReq(protocol.MethodTabList, map[string]any{}, 4))
+	if rList2.Code != http.StatusOK {
+		t.Fatalf("tab_list2 %d %s", rList2.Code, rList2.Body.String())
+	}
+	var list2 struct {
+		Result protocol.TabListResult `json:"result"`
+	}
+	if err := json.Unmarshal(rList2.Body.Bytes(), &list2); err != nil {
+		t.Fatal(err)
+	}
+	if list2.Result.Focus != first {
+		t.Fatalf("focus %q want %q after silent tab_new", list2.Result.Focus, first)
 	}
 }
 

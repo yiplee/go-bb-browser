@@ -353,7 +353,8 @@ func (s *Session) tabChromeCtx(tabID target.ID) (context.Context, error) {
 }
 
 // CreatePageTarget opens a new page target (INV-7: works when zero tabs exist).
-func (s *Session) CreatePageTarget(initialURL string) (target.ID, error) {
+// When silent is true, the tab is created in the background without focusing the browser window.
+func (s *Session) CreatePageTarget(initialURL string, silent bool) (target.ID, error) {
 	if s == nil {
 		return "", fmt.Errorf("browser session is nil")
 	}
@@ -361,7 +362,11 @@ func (s *Session) CreatePageTarget(initialURL string) (target.ID, error) {
 	if ex == nil {
 		return "", fmt.Errorf("browser not available in context")
 	}
-	id, err := target.CreateTarget(initialURL).Do(cdp.WithExecutor(s.ctx, ex))
+	params := target.CreateTarget(initialURL)
+	if silent {
+		params = params.WithBackground(true).WithFocus(false)
+	}
+	id, err := params.Do(cdp.WithExecutor(s.ctx, ex))
 	if err != nil {
 		return "", err
 	}

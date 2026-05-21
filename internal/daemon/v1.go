@@ -335,7 +335,7 @@ func (s *Server) handleTabNew(w http.ResponseWriter, id json.RawMessage, params 
 		return
 	}
 	initial := strings.TrimSpace(p.URL)
-	tid, err := conn.CreatePageTarget(initial)
+	tid, err := conn.CreatePageTarget(initial, p.Silent)
 	if err != nil {
 		s.logger.Error("tab_new create target failed", "err", err)
 		s.rpcErr(w, id, protocol.CodeServerError, "failed to create tab", &protocol.ErrData{
@@ -345,7 +345,9 @@ func (s *Server) handleTabNew(w http.ResponseWriter, id json.RawMessage, params 
 		return
 	}
 	short := s.tabs.RegisterPageTarget(tid)
-	s.tabs.Select(short)
+	if !p.Silent {
+		s.tabs.Select(short)
+	}
 	targets, ptErr := conn.PageTargets()
 	if ptErr == nil {
 		s.tabs.SyncPageTargets(targets)
@@ -1143,7 +1145,7 @@ func (s *Server) cdpHint(err error) string {
 // tabConn is the CDP surface used by /v1 handlers.
 type tabConn interface {
 	PageTargets() ([]*target.Info, error)
-	CreatePageTarget(initialURL string) (target.ID, error)
+	CreatePageTarget(initialURL string, silent bool) (target.ID, error)
 	CloseTarget(id target.ID) error
 	Navigate(tabID target.ID, url string) error
 	Reload(tabID target.ID) error

@@ -101,6 +101,7 @@ func newHealthCmd() *cobra.Command {
 
 func newOpenCmd() *cobra.Command {
 	var current bool
+	var silent bool
 	var waitSec int
 	c := &cobra.Command{
 		Use:   "open URL",
@@ -121,40 +122,41 @@ func newOpenCmd() *cobra.Command {
 				fmt.Println(tab)
 				return nil
 			}
-			if err := cmdRPC(ctx, baseURL, jsonOut, protocol.MethodTabNew, map[string]any{"url": rawURL}); err != nil {
+			params := map[string]any{"url": rawURL}
+			if silent {
+				params["silent"] = true
+			}
+			b, err := postRPC(ctx, baseURL, protocol.MethodTabNew, params)
+			if err != nil {
 				return err
+			}
+			if jsonOut {
+				fmt.Println(string(b))
+				if rpcHasError(b) {
+					return errors.New("json-rpc error in response")
+				}
+				return nil
+			}
+			if err := rpcEnvelopeError(b); err != nil {
+				return err
+			}
+			var env struct {
+				Result protocol.TabNewResult `json:"result"`
+			}
+			if err := json.Unmarshal(b, &env); err != nil {
+				return fmt.Errorf("decode tab_new response: %w", err)
 			}
 			if !jsonOut && waitSec > 0 {
 				time.Sleep(time.Duration(waitSec) * time.Second)
 			}
-			// Print new short id from last response — re-fetch tab_list to get focused tab after tab_new
-			if jsonOut {
-				return nil
-			}
-			b, err := postRPC(ctx, baseURL, protocol.MethodTabList, map[string]any{})
-			if err != nil {
-				return err
-			}
-			var env struct {
-				Result struct {
-					Tab   string `json:"tab"`
-					Focus string `json:"focus"`
-				} `json:"result"`
-			}
-			if err := json.Unmarshal(b, &env); err != nil {
-				return nil
-			}
-			out := strings.TrimSpace(env.Result.Focus)
-			if out == "" {
-				out = strings.TrimSpace(env.Result.Tab)
-			}
-			if out != "" {
+			if out := strings.TrimSpace(env.Result.Tab); out != "" {
 				fmt.Println(out)
 			}
 			return nil
 		},
 	}
 	c.Flags().BoolVar(&current, "current", false, "navigate in the current/focused tab instead of opening a new tab")
+	c.Flags().BoolVar(&silent, "silent", false, "open tab in background without changing browser or daemon focus")
 	c.Flags().IntVar(&waitSec, "wait", 0, "after opening a new tab, sleep this many seconds (helps slow pages)")
 	return c
 }
@@ -175,6 +177,7 @@ func newTabCmd() *cobra.Command {
 		},
 	})
 
+	var tabNewSilent bool
 	tabNew := &cobra.Command{
 		Use:   "new [url]",
 		Short: "JSON-RPC tab_new",
@@ -185,9 +188,14 @@ func newTabCmd() *cobra.Command {
 			if len(args) > 0 {
 				u = strings.TrimSpace(args[0])
 			}
-			return cmdRPC(ctx, baseURL, jsonOut, protocol.MethodTabNew, map[string]any{"url": u})
+			params := map[string]any{"url": u}
+			if tabNewSilent {
+				params["silent"] = true
+			}
+			return cmdRPC(ctx, baseURL, jsonOut, protocol.MethodTabNew, params)
 		},
 	}
+	tabNew.Flags().BoolVar(&tabNewSilent, "silent", false, "background tab; keep current browser and daemon focus")
 
 	var selID string
 	var selIdx int
@@ -1073,30 +1081,24 @@ func pickTabForSite(ctx context.Context, domain string) (string, error) {
 	}
 	// Open new tab — wait for load (best-effort)
 	u := "https://" + domain + "/"
-	if err := cmdRPC(ctx, baseURL, true, protocol.MethodTabNew, map[string]any{"url": u}); err != nil {
-		return "", err
-	}
-	time.Sleep(3 * time.Second)
-	b2, err := postRPC(ctx, baseURL, protocol.MethodTabList, map[string]any{})
+	bNew, err := postRPC(ctx, baseURL, protocol.MethodTabNew, map[string]any{"url": u, "silent": true})
 	if err != nil {
 		return "", err
 	}
-	var env2 struct {
-		Result struct {
-			Focus string `json:"focus"`
-			Tab   string `json:"tab"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(b2, &env2); err != nil {
+	if err := rpcEnvelopeError(bNew); err != nil {
 		return "", err
 	}
-	out := strings.TrimSpace(env2.Result.Focus)
-	if out == "" {
-		out = strings.TrimSpace(env2.Result.Tab)
+	var newEnv struct {
+		Result protocol.TabNewResult `json:"result"`
 	}
+	if err := json.Unmarshal(bNew, &newEnv); err != nil {
+		return "", err
+	}
+	out := strings.TrimSpace(newEnv.Result.Tab)
 	if out == "" {
 		return "", errors.New("could not resolve tab after opening domain tab")
 	}
+	time.Sleep(3 * time.Second)
 	return out, nil
 }
 
