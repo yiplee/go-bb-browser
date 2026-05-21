@@ -92,7 +92,7 @@ err := c.Call(ctx, method, params, resultPtr)
 | `TabList` | `tab_list` | `TabListParams` | `TabListResult` |
 | `TabFocus` | `tab_focus` | `TabFocusParams` | `TabFocusResult` |
 | `TabSelect` | `tab_select` | `TabSelectParams` | `TabSelectResult` |
-| `TabNew` | `tab_new` | `TabNewParams`（可选 `url`） | `TabNewResult` |
+| `TabNew` | `tab_new` | `TabNewParams`（可选 `url`、`silent`） | `TabNewResult` |
 | `TabClose` | `tab_close` | `TabCloseParams` | `TabCloseResult` |
 | `Goto` | `goto` | `GotoParams` | `GotoResult` |
 | `Reload` | `reload` | `ReloadParams` | `ReloadResult` |

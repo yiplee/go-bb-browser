@@ -82,7 +82,7 @@ Daemon 已实现但 **CLI 未封装** 的 JSON-RPC 方法：`tab_focus`（返回
 | `tab_list` | 列出 page target / 焦点 tab |
 | `tab_focus` | 同步后返回当前可操作 tab 元数据 |
 | `tab_select` | 切换 daemon 焦点 tab |
-| `tab_new` | 新建 tab（可选 `url`） |
+| `tab_new` | 新建 tab（可选 `url`；`silent: true` 后台开 tab，不抢焦点） |
 | `tab_close` | 关闭 tab |
 | `goto` | 导航 |
 | `reload` | 刷新 |

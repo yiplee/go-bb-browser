@@ -137,7 +137,7 @@ bb-browser run ./x.js hello --count 20
 
 1. 脚本有 `@meta.domain` → 在 `tab_list` 中找 URL hostname **等于 domain 或以 `.domain` 结尾**（含子域）的 tab，命中则用它。
 2. 没 `@meta` 或 `domain` 空 → 用 daemon 当前焦点 tab（`tab_list.focus || tab_list.tab`）。
-3. 有 `domain` 但没匹配 tab → `tab_new https://<domain>/`，**sleep 3s** 粗略等待加载，再取焦点 tab。
+3. 有 `domain` 但没匹配 tab → `tab_new`（`silent: true`）`https://<domain>/`，**sleep 3s** 粗略等待加载，用响应里的新 `tab` id。
 
 含义：**登录态必须已经在这个 Chrome profile 里存在**（daemon 只 attach，不重启、不注入 Cookie）。未登录就需要用户**先在浏览器里登录一次**。
 

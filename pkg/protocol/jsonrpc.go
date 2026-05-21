@@ -91,7 +91,8 @@ type TabSelectParams struct {
 }
 
 type TabNewParams struct {
-	URL string `json:"url,omitempty"`
+	URL    string `json:"url,omitempty"`
+	Silent bool   `json:"silent,omitempty"` // background tab; do not change daemon or browser focus
 }
 
 type GotoParams struct {
