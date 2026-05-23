@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/yiplee/go-bb-browser/internal/daemon"
 )
@@ -29,6 +30,7 @@ func run() int {
 
 	debuggerURL := flag.String("debugger-url", envOrDefault("BB_BROWSER_DEBUGGER_URL", ""), "Chrome DevTools endpoint (ws/http URL or host:port); required")
 	listen := flag.String("listen", envOrDefault("BB_BROWSER_LISTEN", daemon.DefaultListenAddr), "HTTP listen address for the daemon API")
+	tabIdleTimeout := flag.String("tab-idle-timeout", envOrDefault("BB_BROWSER_TAB_IDLE_TIMEOUT", "5m"), "close daemon-created tabs after this idle period (0 disables)")
 	flag.Parse()
 
 	if showVersion {
@@ -36,9 +38,16 @@ func run() int {
 		return 0
 	}
 
+	idleTimeout, err := time.ParseDuration(*tabIdleTimeout)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config: invalid tab-idle-timeout %q: %v\n", *tabIdleTimeout, err)
+		return 2
+	}
+
 	cfg := daemon.Config{
-		DebuggerURL: *debuggerURL,
-		ListenAddr:  *listen,
+		DebuggerURL:    *debuggerURL,
+		ListenAddr:     *listen,
+		TabIdleTimeout: idleTimeout,
 	}
 	if err := cfg.Validate(); err != nil {
 		fmt.Fprintf(os.Stderr, "config: %v\n", err)

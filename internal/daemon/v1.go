@@ -3,6 +3,7 @@ package daemon
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -163,7 +164,7 @@ func (s *Server) handleTabList(w http.ResponseWriter, id json.RawMessage, params
 		})
 		return
 	}
-	snaps := s.tabs.SyncPageTargets(targets)
+	snaps := s.syncTabsFromTargets(targets)
 	sort.Slice(snaps, func(i, j int) bool {
 		return snaps[i].ShortID < snaps[j].ShortID
 	})
@@ -210,7 +211,7 @@ func (s *Server) handleTabFocus(w http.ResponseWriter, id json.RawMessage, param
 		})
 		return
 	}
-	snaps := s.tabs.SyncPageTargets(targets)
+	snaps := s.syncTabsFromTargets(targets)
 	if len(snaps) == 0 {
 		s.rpcErr(w, id, protocol.CodeInvalidParams, "no focused tab", &protocol.ErrData{
 			Error:  "no page tabs",
@@ -309,7 +310,7 @@ func (s *Server) handleTabSelect(w http.ResponseWriter, id json.RawMessage, para
 		})
 		return
 	}
-	s.tabs.SyncPageTargets(targets)
+	s.syncTabsFromTargets(targets)
 
 	if !s.tabs.Select(tab) {
 		s.rpcErr(w, id, protocol.CodeInvalidParams, "unknown tab id", &protocol.ErrData{
@@ -319,6 +320,7 @@ func (s *Server) handleTabSelect(w http.ResponseWriter, id json.RawMessage, para
 		})
 		return
 	}
+	s.touchTabActivity(tab)
 	seq := s.seq.Next()
 	s.rpcOK(w, id, protocol.TabSelectResult{Tab: tab, Seq: seq})
 }
@@ -345,12 +347,13 @@ func (s *Server) handleTabNew(w http.ResponseWriter, id json.RawMessage, params 
 		return
 	}
 	short := s.tabs.RegisterPageTarget(tid)
+	s.markTabManaged(short)
 	if !p.Silent {
 		s.tabs.Select(short)
 	}
 	targets, ptErr := conn.PageTargets()
 	if ptErr == nil {
-		s.tabs.SyncPageTargets(targets)
+		s.syncTabsFromTargets(targets)
 	}
 	seq := s.seq.Next()
 	s.rpcOK(w, id, protocol.TabNewResult{Tab: short, Seq: seq})
@@ -390,13 +393,7 @@ func (s *Server) handleGoto(w http.ResponseWriter, id json.RawMessage, params js
 	}
 	unlock := s.lockTab(tab)
 	defer unlock()
-	tid, ok := s.tabs.Lookup(tab)
-	if !ok {
-		if targets, err := conn.PageTargets(); err == nil {
-			s.tabs.SyncPageTargets(targets)
-			tid, ok = s.tabs.Lookup(tab)
-		}
-	}
+	tid, ok := s.resolveTab(conn, tab)
 	if !ok {
 		s.rpcErr(w, id, protocol.CodeInvalidParams, "unknown tab id", &protocol.ErrData{
 			Error:  "unknown tab id",
@@ -439,13 +436,7 @@ func (s *Server) handleReload(w http.ResponseWriter, id json.RawMessage, params 
 	}
 	unlock := s.lockTab(tab)
 	defer unlock()
-	tid, ok := s.tabs.Lookup(tab)
-	if !ok {
-		if targets, err := conn.PageTargets(); err == nil {
-			s.tabs.SyncPageTargets(targets)
-			tid, ok = s.tabs.Lookup(tab)
-		}
-	}
+	tid, ok := s.resolveTab(conn, tab)
 	if !ok {
 		s.rpcErr(w, id, protocol.CodeInvalidParams, "unknown tab id", &protocol.ErrData{
 			Error:  "unknown tab id",
@@ -486,40 +477,27 @@ func (s *Server) handleTabClose(w http.ResponseWriter, id json.RawMessage, param
 		s.rpcErr(w, id, protocol.CodeServerError, "browser session not ready", nil)
 		return
 	}
-	unlock := s.lockTab(tab)
-	defer unlock()
-	tid, ok := s.tabs.Lookup(tab)
-	if !ok {
-		if targets, err := conn.PageTargets(); err == nil {
-			s.tabs.SyncPageTargets(targets)
-			tid, ok = s.tabs.Lookup(tab)
+	if err := s.closeTabByShort(tab); err != nil {
+		switch {
+		case errors.Is(err, errTabCloseUnknownID):
+			s.rpcErr(w, id, protocol.CodeInvalidParams, "unknown tab id", &protocol.ErrData{
+				Error:  "unknown tab id",
+				Hint:   "invalid or stale tab short id",
+				Method: protocol.MethodTabClose,
+			})
+		case errors.Is(err, errTabCloseNoConn):
+			s.rpcErr(w, id, protocol.CodeServerError, "browser session not ready", nil)
+		default:
+			s.logger.Error("tab_close failed", "err", err)
+			s.rpcErr(w, id, protocol.CodeServerError, "failed to close tab", &protocol.ErrData{
+				Error: "failed to close tab",
+				Hint:  s.cdpHint(err),
+			})
 		}
-	}
-	if !ok {
-		s.rpcErr(w, id, protocol.CodeInvalidParams, "unknown tab id", &protocol.ErrData{
-			Error:  "unknown tab id",
-			Hint:   "invalid or stale tab short id",
-			Method: protocol.MethodTabClose,
-		})
 		return
-	}
-	if err := conn.CloseTarget(tid); err != nil {
-		s.logger.Error("tab_close failed", "err", err)
-		s.rpcErr(w, id, protocol.CodeServerError, "failed to close tab", &protocol.ErrData{
-			Error: "failed to close tab",
-			Hint:  s.cdpHint(err),
-		})
-		return
-	}
-	targets, ptErr := conn.PageTargets()
-	if ptErr == nil {
-		s.tabs.SyncPageTargets(targets)
 	}
 	seq := s.seq.Next()
 	s.rpcOK(w, id, protocol.TabCloseResult{Tab: tab, Seq: seq})
-	if ptErr == nil {
-		s.syncObservation(conn, targets)
-	}
 }
 
 func (s *Server) handleScreenshot(w http.ResponseWriter, id json.RawMessage, params json.RawMessage) {
@@ -1126,11 +1104,15 @@ func (s *Server) handleFill(w http.ResponseWriter, id json.RawMessage, params js
 func (s *Server) resolveTab(conn tabConn, tab string) (target.ID, bool) {
 	tid, ok := s.tabs.Lookup(tab)
 	if ok {
+		s.touchTabActivity(tab)
 		return tid, true
 	}
 	if targets, err := conn.PageTargets(); err == nil {
-		s.tabs.SyncPageTargets(targets)
-		return s.tabs.Lookup(tab)
+		s.syncTabsFromTargets(targets)
+		if tid, ok := s.tabs.Lookup(tab); ok {
+			s.touchTabActivity(tab)
+			return tid, true
+		}
 	}
 	return tid, false
 }

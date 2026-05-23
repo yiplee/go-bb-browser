@@ -51,7 +51,7 @@ func (s *Server) connectBrowserLocked(ctx context.Context) error {
 		}
 		targets = nil
 	}
-	s.tabs.SyncPageTargets(targets)
+	s.syncTabsFromTargets(targets)
 	s.syncObservation(sess, targets)
 	s.lastBrowserOK = time.Now()
 	if s.logger != nil {

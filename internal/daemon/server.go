@@ -34,6 +34,7 @@ type Server struct {
 
 	obsStore *state.TabObsStore
 	obsSink  *obsSink
+	tabIdle  *state.TabIdleTracker
 
 	tabMuOps    sync.Mutex
 	tabCDPLocks map[string]*sync.Mutex // per short tab id
@@ -54,6 +55,7 @@ func NewServer(cfg Config, logger *slog.Logger) *Server {
 		mux:      http.NewServeMux(),
 		tabs:     state.NewTabRegistry(),
 		obsStore: obsStore,
+		tabIdle:  state.NewTabIdleTracker(),
 	}
 	s.obsSink = &obsSink{seq: &s.seq, store: obsStore}
 	s.routes()
@@ -154,6 +156,10 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		}
 		errCh <- http.ErrServerClosed
 	}()
+
+	if s.cfg.TabIdleTimeout > 0 {
+		go s.runTabIdleSweeper(ctx)
+	}
 
 	select {
 	case <-ctx.Done():

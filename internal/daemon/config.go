@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Config holds daemon runtime settings. DebuggerURL is required from Phase 0 onward so
@@ -20,11 +21,15 @@ type Config struct {
 
 	// MaxBodyBytes caps incoming HTTP request bodies (POST /v1 and similar).
 	MaxBodyBytes int64
+
+	// TabIdleTimeout closes daemon-created tabs after this idle period; 0 disables cleanup.
+	TabIdleTimeout time.Duration
 }
 
 const (
-	DefaultListenAddr   = "127.0.0.1:8787"
-	DefaultMaxBodyBytes = 1 << 20 // 1 MiB
+	DefaultListenAddr       = "127.0.0.1:8787"
+	DefaultMaxBodyBytes     = 1 << 20 // 1 MiB
+	DefaultTabIdleTimeout   = 5 * time.Minute
 )
 
 // Validate checks required fields and normalizes DebuggerURL whitespace.
@@ -53,6 +58,9 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxBodyBytes <= 0 {
 		c.MaxBodyBytes = DefaultMaxBodyBytes
+	}
+	if c.TabIdleTimeout < 0 {
+		return fmt.Errorf("tab idle timeout must be >= 0")
 	}
 	return nil
 }
