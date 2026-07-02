@@ -35,6 +35,7 @@ type Server struct {
 	obsStore *state.TabObsStore
 	obsSink  *obsSink
 	tabIdle  *state.TabIdleTracker
+	tabState *tabStateStore
 
 	tabMuOps    sync.Mutex
 	tabCDPLocks map[string]*sync.Mutex // per short tab id
@@ -50,13 +51,14 @@ func NewServer(cfg Config, logger *slog.Logger) *Server {
 	}
 	obsStore := state.NewTabObsStore()
 	s := &Server{
-		cfg:      cfg,
-		logger:   logger,
-		mux:      http.NewServeMux(),
-		tabs:     state.NewTabRegistry(),
-		obsStore: obsStore,
+		cfg:       cfg,
+		logger:    logger,
+		mux:       http.NewServeMux(),
+		tabs:      state.NewTabRegistry(),
+		obsStore:  obsStore,
 		tabIdle:  state.NewTabIdleTracker(),
 	}
+	s.tabState = initTabStateStore(effectiveStateDir(cfg), logger)
 	s.obsSink = &obsSink{seq: &s.seq, store: obsStore}
 	s.routes()
 	return s

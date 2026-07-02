@@ -2,86 +2,113 @@ package state
 
 import (
 	"slices"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/chromedp/cdproto/target"
 )
 
 // TabIdleTracker tracks last-activity time for daemon-created tabs eligible for idle cleanup.
 type TabIdleTracker struct {
 	mu      sync.Mutex
-	managed map[string]time.Time // short id -> last activity
+	managed map[target.ID]time.Time
 }
 
 // NewTabIdleTracker returns an empty idle tracker.
 func NewTabIdleTracker() *TabIdleTracker {
 	return &TabIdleTracker{
-		managed: make(map[string]time.Time),
+		managed: make(map[target.ID]time.Time),
 	}
 }
 
 // MarkManaged registers a daemon-created tab and sets its last activity to now.
-func (t *TabIdleTracker) MarkManaged(short string) {
-	short = strings.TrimSpace(short)
-	if short == "" || t == nil {
+func (t *TabIdleTracker) MarkManaged(id target.ID) {
+	if t == nil || id == "" {
+		return
+	}
+	t.MarkManagedAt(id, time.Now())
+}
+
+// MarkManagedAt registers a daemon-created tab with an explicit last-activity time.
+func (t *TabIdleTracker) MarkManagedAt(id target.ID, at time.Time) {
+	if t == nil || id == "" {
 		return
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.managed[short] = time.Now()
+	t.managed[id] = at
 }
 
 // Touch updates last activity for a managed tab.
-func (t *TabIdleTracker) Touch(short string) {
-	short = strings.TrimSpace(short)
-	if short == "" || t == nil {
+func (t *TabIdleTracker) Touch(id target.ID) {
+	if t == nil || id == "" {
 		return
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if _, ok := t.managed[short]; ok {
-		t.managed[short] = time.Now()
+	if _, ok := t.managed[id]; ok {
+		t.managed[id] = time.Now()
 	}
 }
 
 // Forget removes a tab from idle tracking.
-func (t *TabIdleTracker) Forget(short string) {
-	short = strings.TrimSpace(short)
-	if short == "" || t == nil {
+func (t *TabIdleTracker) Forget(id target.ID) {
+	if t == nil || id == "" {
 		return
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	delete(t.managed, short)
+	delete(t.managed, id)
 }
 
-// SyncPresent removes managed entries whose short id is no longer present in the browser.
-func (t *TabIdleTracker) SyncPresent(present map[string]struct{}) {
+// SyncPresent removes managed entries whose target id is no longer present in the browser.
+func (t *TabIdleTracker) SyncPresent(present map[target.ID]struct{}) {
 	if t == nil {
 		return
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	for short := range t.managed {
-		if _, ok := present[short]; !ok {
-			delete(t.managed, short)
+	for id := range t.managed {
+		if _, ok := present[id]; !ok {
+			delete(t.managed, id)
 		}
 	}
 }
 
-// Expired returns managed short ids whose last activity is at or beyond timeout.
-func (t *TabIdleTracker) Expired(now time.Time, timeout time.Duration) []string {
+// Snapshot returns a copy of managed target ids and their last-activity times.
+func (t *TabIdleTracker) Snapshot() map[target.ID]time.Time {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make(map[target.ID]time.Time, len(t.managed))
+	for id, at := range t.managed {
+		out[id] = at
+	}
+	return out
+}
+
+// Expired returns managed target ids whose last activity is at or beyond timeout.
+func (t *TabIdleTracker) Expired(now time.Time, timeout time.Duration) []target.ID {
 	if t == nil || timeout <= 0 {
 		return nil
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	out := make([]string, 0)
-	for short, last := range t.managed {
+	out := make([]target.ID, 0)
+	for id, last := range t.managed {
 		if !now.Before(last.Add(timeout)) {
-			out = append(out, short)
+			out = append(out, id)
 		}
 	}
-	slices.Sort(out)
+	slices.SortFunc(out, func(a, b target.ID) int {
+		if x, y := string(a), string(b); x < y {
+			return -1
+		} else if x > y {
+			return 1
+		}
+		return 0
+	})
 	return out
 }

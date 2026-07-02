@@ -54,13 +54,21 @@ sudo loginctl enable-linger "$USER"
   ```
 
 - **Environment variables** (alternative to flags — `bb-daemon` reads
-  `BB_BROWSER_DEBUGGER_URL` and `BB_BROWSER_LISTEN`):
+  `BB_BROWSER_DEBUGGER_URL`, `BB_BROWSER_LISTEN`, `BB_BROWSER_TAB_IDLE_TIMEOUT`,
+  and `BB_BROWSER_STATE_DIR`):
 
   ```ini
   [Service]
   Environment=BB_BROWSER_DEBUGGER_URL=http://127.0.0.1:9222
   Environment=BB_BROWSER_LISTEN=127.0.0.1:8765
+  Environment=BB_BROWSER_TAB_IDLE_TIMEOUT=5m
+  Environment=BB_BROWSER_STATE_DIR=%h/.local/state/bb-daemon
   ```
+
+  Managed-tab idle state is written to `tabs.json` under that directory so idle
+  cleanup continues after daemon restarts. The unit's `ReadWritePaths=` already
+  allows `%h/.local/state/bb-daemon`; you may also set `StateDirectory=bb-daemon`
+  under `[Service]` for systemd-managed state layout.
 
 ## Uninstall
 

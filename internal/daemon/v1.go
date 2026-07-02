@@ -320,7 +320,9 @@ func (s *Server) handleTabSelect(w http.ResponseWriter, id json.RawMessage, para
 		})
 		return
 	}
-	s.touchTabActivity(tab)
+	if tid, ok := s.tabs.Lookup(tab); ok {
+		s.touchTabActivity(tid)
+	}
 	seq := s.seq.Next()
 	s.rpcOK(w, id, protocol.TabSelectResult{Tab: tab, Seq: seq})
 }
@@ -347,7 +349,7 @@ func (s *Server) handleTabNew(w http.ResponseWriter, id json.RawMessage, params 
 		return
 	}
 	short := s.tabs.RegisterPageTarget(tid)
-	s.markTabManaged(short)
+	s.markTabManaged(tid)
 	if !p.Silent {
 		s.tabs.Select(short)
 	}
@@ -1104,13 +1106,13 @@ func (s *Server) handleFill(w http.ResponseWriter, id json.RawMessage, params js
 func (s *Server) resolveTab(conn tabConn, tab string) (target.ID, bool) {
 	tid, ok := s.tabs.Lookup(tab)
 	if ok {
-		s.touchTabActivity(tab)
+		s.touchTabActivity(tid)
 		return tid, true
 	}
 	if targets, err := conn.PageTargets(); err == nil {
 		s.syncTabsFromTargets(targets)
 		if tid, ok := s.tabs.Lookup(tab); ok {
-			s.touchTabActivity(tab)
+			s.touchTabActivity(tid)
 			return tid, true
 		}
 	}
