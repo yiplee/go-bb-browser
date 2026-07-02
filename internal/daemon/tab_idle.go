@@ -14,15 +14,25 @@ var (
 	errTabCloseUnknownID = errors.New("unknown tab id")
 )
 
-func (s *Server) markTabManaged(short string) {
+func (s *Server) markTabManaged(tid target.ID) {
 	if s.tabIdle != nil {
-		s.tabIdle.MarkManaged(short)
+		s.tabIdle.MarkManaged(tid)
+		s.persistTabIdle()
 	}
 }
 
-func (s *Server) touchTabActivity(short string) {
+func (s *Server) touchTabActivity(tid target.ID) {
 	if s.tabIdle != nil {
-		s.tabIdle.Touch(short)
+		s.tabIdle.Touch(tid)
+	}
+}
+
+func (s *Server) persistTabIdle() {
+	if s.tabState == nil || s.tabIdle == nil {
+		return
+	}
+	if err := s.tabState.Save(s.tabIdle.Snapshot()); err != nil && s.logger != nil {
+		s.logger.Warn("save tab state failed", "err", err)
 	}
 }
 
@@ -36,11 +46,52 @@ func (s *Server) syncTabIdlePresence(snaps []state.TabSnapshot) {
 	if s.tabIdle == nil {
 		return
 	}
-	present := make(map[string]struct{}, len(snaps))
+	present := make(map[target.ID]struct{}, len(snaps))
 	for _, sn := range snaps {
-		present[sn.ShortID] = struct{}{}
+		if sn.TargetID == "" {
+			continue
+		}
+		present[sn.TargetID] = struct{}{}
 	}
 	s.tabIdle.SyncPresent(present)
+}
+
+func (s *Server) reconcileIdleFromDisk(snaps []state.TabSnapshot) {
+	if s.tabIdle == nil || s.tabState == nil {
+		return
+	}
+	loaded, err := s.tabState.Load()
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("load tab state failed", "err", err)
+		}
+		loaded = map[target.ID]time.Time{}
+	}
+
+	now := time.Now()
+	timeout := s.cfg.TabIdleTimeout
+	grace := s.cfg.IdleStartupGrace
+	minLast := now
+	if timeout > grace {
+		minLast = now.Add(-(timeout - grace))
+	}
+
+	present := make(map[target.ID]struct{}, len(snaps))
+	for _, sn := range snaps {
+		if sn.TargetID == "" {
+			continue
+		}
+		present[sn.TargetID] = struct{}{}
+		if last, ok := loaded[sn.TargetID]; ok {
+			effective := last
+			if effective.Before(minLast) {
+				effective = minLast
+			}
+			s.tabIdle.MarkManagedAt(sn.TargetID, effective)
+		}
+	}
+	s.tabIdle.SyncPresent(present)
+	s.persistTabIdle()
 }
 
 func (s *Server) closeTabByShort(tab string) error {
@@ -70,7 +121,8 @@ func (s *Server) closeTabByShort(tab string) error {
 		s.syncObservation(conn, targets)
 	}
 	if s.tabIdle != nil {
-		s.tabIdle.Forget(tab)
+		s.tabIdle.Forget(tid)
+		s.persistTabIdle()
 	}
 	return nil
 }
@@ -101,7 +153,7 @@ func (s *Server) closeExpiredTabs(ctx context.Context) {
 	if timeout <= 0 || s.tabIdle == nil {
 		return
 	}
-	for _, short := range s.tabIdle.Expired(time.Now(), timeout) {
+	for _, tid := range s.tabIdle.Expired(time.Now(), timeout) {
 		select {
 		case <-ctx.Done():
 			return
@@ -113,10 +165,17 @@ func (s *Server) closeExpiredTabs(ctx context.Context) {
 			}
 			return
 		}
+		short, ok := s.tabs.ShortForTarget(tid)
+		if !ok {
+			if s.tabIdle != nil {
+				s.tabIdle.Forget(tid)
+			}
+			continue
+		}
 		if err := s.closeTabByShort(short); err != nil {
 			if errors.Is(err, errTabCloseUnknownID) {
 				if s.tabIdle != nil {
-					s.tabIdle.Forget(short)
+					s.tabIdle.Forget(tid)
 				}
 				continue
 			}
@@ -129,4 +188,5 @@ func (s *Server) closeExpiredTabs(ctx context.Context) {
 			s.logger.Info("tab idle closed", "tab", short, "idle", timeout)
 		}
 	}
+	s.persistTabIdle()
 }

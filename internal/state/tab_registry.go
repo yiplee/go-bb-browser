@@ -185,6 +185,17 @@ func sanitizeShort(s string) string {
 	return s
 }
 
+// ShortForTarget returns the short id for a CDP target id, if registered.
+func (r *TabRegistry) ShortForTarget(id target.ID) (string, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if id == "" {
+		return "", false
+	}
+	short, ok := r.targetToShort[id]
+	return short, ok
+}
+
 // Lookup validates short id and returns the CDP target id (INV-3).
 func (r *TabRegistry) Lookup(shortID string) (target.ID, bool) {
 	r.mu.RLock()

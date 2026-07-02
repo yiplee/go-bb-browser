@@ -31,6 +31,7 @@ func run() int {
 	debuggerURL := flag.String("debugger-url", envOrDefault("BB_BROWSER_DEBUGGER_URL", ""), "Chrome DevTools endpoint (ws/http URL or host:port); required")
 	listen := flag.String("listen", envOrDefault("BB_BROWSER_LISTEN", daemon.DefaultListenAddr), "HTTP listen address for the daemon API")
 	tabIdleTimeout := flag.String("tab-idle-timeout", envOrDefault("BB_BROWSER_TAB_IDLE_TIMEOUT", "5m"), "close daemon-created tabs after this idle period (0 disables)")
+	stateDir := flag.String("state-dir", envOrDefault("BB_BROWSER_STATE_DIR", ""), "directory for persisted managed-tab state (default: ~/.local/state/bb-daemon)")
 	flag.Parse()
 
 	if showVersion {
@@ -48,6 +49,7 @@ func run() int {
 		DebuggerURL:    *debuggerURL,
 		ListenAddr:     *listen,
 		TabIdleTimeout: idleTimeout,
+		StateDir:       *stateDir,
 	}
 	if err := cfg.Validate(); err != nil {
 		fmt.Fprintf(os.Stderr, "config: %v\n", err)

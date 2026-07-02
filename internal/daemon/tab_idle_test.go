@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -14,10 +16,16 @@ import (
 )
 
 func newIdleTestServer(fc *fakeConn, timeout time.Duration) *Server {
+	return newIdleTestServerWithState(fc, timeout, stateDirDisabled)
+}
+
+func newIdleTestServerWithState(fc *fakeConn, timeout time.Duration, stateDir string) *Server {
 	cfg := Config{
-		DebuggerURL:    "127.0.0.1:9222",
-		ListenAddr:     "127.0.0.1:0",
-		TabIdleTimeout: timeout,
+		DebuggerURL:      "127.0.0.1:9222",
+		ListenAddr:       "127.0.0.1:0",
+		TabIdleTimeout:   timeout,
+		StateDir:         stateDir,
+		IdleStartupGrace: 30 * time.Millisecond,
 	}
 	if err := cfg.Validate(); err != nil {
 		panic(err)
@@ -113,4 +121,112 @@ func TestConfigValidateTabIdleTimeoutNegative(t *testing.T) {
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected error for negative tab idle timeout")
 	}
+}
+
+func TestTabIdleRestartRestoresManagedTab(t *testing.T) {
+	stateDir := t.TempDir()
+	timeout := 50 * time.Millisecond
+
+	fcA := &fakeConn{infos: []*target.Info{}}
+	srvA := newIdleTestServerWithState(fcA, timeout, stateDir)
+	rec := postRPC(t, srvA, rpcReq(protocol.MethodTabNew, map[string]any{}, 1))
+	var env struct {
+		Result protocol.TabNewResult `json:"result"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	if len(fcA.infos) != 1 {
+		t.Fatalf("tab_new: %#v", fcA.infos)
+	}
+	statePath := filepath.Join(stateDir, tabStateFileName)
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("expected state file: %v", err)
+	}
+
+	fcB := &fakeConn{infos: []*target.Info{
+		{
+			TargetID: fcA.infos[0].TargetID,
+			Type:     "page",
+			Title:    "t",
+			URL:      "https://ex",
+		},
+	}}
+	srvB := newIdleTestServerWithState(fcB, timeout, stateDir)
+	snaps := srvB.syncTabsFromTargets(fcB.infos)
+	srvB.reconcileIdleFromDisk(snaps)
+
+	time.Sleep(60 * time.Millisecond)
+	srvB.closeExpiredTabs(context.Background())
+	if len(fcB.infos) != 0 {
+		t.Fatalf("restored managed tab not closed after idle: %#v", fcB.infos)
+	}
+}
+
+func TestTabIdleRestartGraceDelaysClose(t *testing.T) {
+	stateDir := t.TempDir()
+	timeout := 80 * time.Millisecond
+	grace := 40 * time.Millisecond
+	tabID := target.ID("ABCDEF999999")
+
+	store := newTabStateStore(stateDir)
+	expiredAt := time.Now().Add(-timeout - time.Millisecond)
+	if err := store.Save(map[target.ID]time.Time{tabID: expiredAt}); err != nil {
+		t.Fatal(err)
+	}
+
+	fc := &fakeConn{infos: []*target.Info{
+		{TargetID: tabID, Type: "page", Title: "t", URL: "https://ex"},
+	}}
+	cfg := Config{
+		DebuggerURL:      "127.0.0.1:9222",
+		ListenAddr:       "127.0.0.1:0",
+		TabIdleTimeout:   timeout,
+		StateDir:         stateDir,
+		IdleStartupGrace: grace,
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(cfg, nil)
+	srv.tabHook = fc
+	snaps := srv.syncTabsFromTargets(fc.infos)
+	srv.reconcileIdleFromDisk(snaps)
+
+	srv.closeExpiredTabs(context.Background())
+	if len(fc.infos) != 1 {
+		t.Fatalf("tab closed during grace: %#v", fc.infos)
+	}
+
+	time.Sleep(grace + timeout/2)
+	srv.closeExpiredTabs(context.Background())
+	if len(fc.infos) != 0 {
+		t.Fatalf("tab not closed after grace+timeout: %#v", fc.infos)
+	}
+}
+
+func TestTabStateStoreUnwritableDirDisablesPersistence(t *testing.T) {
+	readOnlyDir := t.TempDir()
+	if err := os.Chmod(readOnlyDir, 0o555); err != nil {
+		t.Skip("cannot chmod read-only:", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(readOnlyDir, 0o755) })
+
+	cfg := Config{
+		DebuggerURL:    "127.0.0.1:9222",
+		ListenAddr:     "127.0.0.1:0",
+		TabIdleTimeout: 50 * time.Millisecond,
+		StateDir:       readOnlyDir,
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := NewServer(cfg, nil)
+	if srv.tabState != nil {
+		t.Fatal("expected persistence disabled for unwritable state dir")
+	}
+	fc := &fakeConn{infos: []*target.Info{}}
+	srv.tabHook = fc
+	postRPC(t, srv, rpcReq(protocol.MethodTabNew, map[string]any{}, 1))
 }

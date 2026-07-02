@@ -70,6 +70,32 @@ flowchart LR
 |------|------|
 | `BB_BROWSER_DEBUGGER_URL` | Chrome DevTools 端点（`host:port` 或 ws/http URL），等价 `--debugger-url` |
 | `BB_BROWSER_LISTEN` | daemon 监听地址，默认 `127.0.0.1:8787` |
+| `BB_BROWSER_TAB_IDLE_TIMEOUT` | 自动关闭 daemon 创建的 idle tab 的超时，默认 `5m`；`0` 禁用 |
+| `BB_BROWSER_STATE_DIR` | 持久化 managed-tab 状态目录，默认 `~/.local/state/bb-daemon`；等价 `--state-dir` |
+
+**Idle tab 自动清理**：`tab_new` 创建的 tab 会被 daemon 跟踪；在 `BB_BROWSER_TAB_IDLE_TIMEOUT` 内无操作（`goto`、`eval`、`tab_select` 等）则自动 `tab_close`。用户手动打开的 tab 不受影响。状态写入 `{StateDir}/tabs.json`（按 CDP target id），**daemon 重启后**会恢复 managed 集合并继续计时；重启后有约 30s 的 grace，避免刚启动就批量关 tab。若 state 目录不可写，则退化为仅内存跟踪（重启后丢失）。
+
+**Docker Compose 示例**（需挂载 volume 才能跨容器重建保留 state）：
+
+```yaml
+services:
+  bb-daemon:
+    image: your/bb-daemon:latest
+    environment:
+      BB_BROWSER_DEBUGGER_URL: "http://chrome:9222"
+      BB_BROWSER_LISTEN: "0.0.0.0:8787"
+      BB_BROWSER_STATE_DIR: "/var/lib/bb-daemon"
+      BB_BROWSER_TAB_IDLE_TIMEOUT: "5m"
+    ports:
+      - "8787:8787"
+    volumes:
+      - bb-state:/var/lib/bb-daemon
+
+volumes:
+  bb-state:
+```
+
+镜像内默认用户为 `nonroot`（uid 65532）；bind mount 时需确保目录可写，或使用 named volume。
 
 **HTTP API 摘要**：`POST /v1` 体为 JSON-RPC：`jsonrpc`、`method`、`params`、`id`。成功时 `result`；失败时 `error`（`code`、`message`、可选 `data`）。业务成功响应在适用处带 **`tab`** 与 **`seq`**；网络/控制台/错误等观测类结果带 **`cursor`** / **`events`** 等（见 `pkg/protocol` 与现有 README 中的方法表）。非 POST 访问 `/v1` 返回 **405**。
 

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -24,12 +26,20 @@ type Config struct {
 
 	// TabIdleTimeout closes daemon-created tabs after this idle period; 0 disables cleanup.
 	TabIdleTimeout time.Duration
+
+	// StateDir holds persisted managed-tab idle state (tabs.json). Empty disables persistence.
+	StateDir string
+
+	// IdleStartupGrace prevents immediate mass-close of restored tabs after daemon restart.
+	IdleStartupGrace time.Duration
 }
 
 const (
-	DefaultListenAddr       = "127.0.0.1:8787"
-	DefaultMaxBodyBytes     = 1 << 20 // 1 MiB
-	DefaultTabIdleTimeout   = 5 * time.Minute
+	DefaultListenAddr         = "127.0.0.1:8787"
+	DefaultMaxBodyBytes       = 1 << 20 // 1 MiB
+	DefaultTabIdleTimeout     = 5 * time.Minute
+	DefaultIdleStartupGrace   = 30 * time.Second
+	defaultStateDirRel        = ".local/state/bb-daemon"
 )
 
 // Validate checks required fields and normalizes DebuggerURL whitespace.
@@ -62,7 +72,30 @@ func (c *Config) Validate() error {
 	if c.TabIdleTimeout < 0 {
 		return fmt.Errorf("tab idle timeout must be >= 0")
 	}
+	if c.IdleStartupGrace <= 0 {
+		c.IdleStartupGrace = DefaultIdleStartupGrace
+	}
+	if dir := strings.TrimSpace(c.StateDir); dir != "" && dir != stateDirDisabled {
+		c.StateDir = filepath.Clean(dir)
+	}
 	return nil
+}
+
+const stateDirDisabled = "-"
+
+func effectiveStateDir(cfg Config) string {
+	dir := strings.TrimSpace(cfg.StateDir)
+	if dir == "" || dir == stateDirDisabled {
+		if dir == stateDirDisabled {
+			return ""
+		}
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			return ""
+		}
+		return filepath.Join(home, defaultStateDirRel)
+	}
+	return filepath.Clean(dir)
 }
 
 // normalizeBareDebuggerHostPort accepts host:port where the host may be a bare IPv6 literal

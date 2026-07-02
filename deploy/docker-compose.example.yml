@@ -1,0 +1,18 @@
+# Example Docker Compose layout for bb-daemon.
+# Mount a volume for managed-tab idle state so cleanup survives container recreate.
+
+services:
+  bb-daemon:
+    image: your/bb-daemon:latest
+    environment:
+      BB_BROWSER_DEBUGGER_URL: "http://chrome:9222"
+      BB_BROWSER_LISTEN: "0.0.0.0:8787"
+      BB_BROWSER_STATE_DIR: "/var/lib/bb-daemon"
+      BB_BROWSER_TAB_IDLE_TIMEOUT: "5m"
+    ports:
+      - "8787:8787"
+    volumes:
+      - bb-state:/var/lib/bb-daemon
+
+volumes:
+  bb-state:
