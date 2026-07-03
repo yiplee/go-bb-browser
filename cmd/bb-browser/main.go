@@ -61,6 +61,7 @@ Requires Chrome with remote debugging and a running bb-daemon (see README).`),
 
 	root.AddCommand(
 		newHealthCmd(),
+		newAuditCmd(),
 		newLaunchCmd(),
 		newOpenCmd(),
 		newTabCmd(),
@@ -97,6 +98,54 @@ func newHealthCmd() *cobra.Command {
 			return cmdHealth(ctx, baseURL, jsonOut)
 		},
 	}
+}
+
+func newAuditCmd() *cobra.Command {
+	var since uint64
+	var limit int
+	c := &cobra.Command{
+		Use:   "audit",
+		Short: "List persisted tab-related RPC audit records",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, cancel := context.WithTimeout(cmd.Context(), 60*time.Second)
+			defer cancel()
+			params := map[string]any{}
+			if cmd.Flags().Changed("since") {
+				params["since"] = since
+			}
+			if cmd.Flags().Changed("limit") {
+				params["limit"] = limit
+			}
+			if jsonOut {
+				return cmdRPC(ctx, baseURL, true, protocol.MethodAuditList, params)
+			}
+			b, err := postRPC(ctx, baseURL, protocol.MethodAuditList, params)
+			if err != nil {
+				return err
+			}
+			if err := rpcEnvelopeError(b); err != nil {
+				return err
+			}
+			var env struct {
+				Result protocol.AuditListResult `json:"result"`
+			}
+			if err := json.Unmarshal(b, &env); err != nil {
+				return err
+			}
+			for _, rec := range env.Result.Records {
+				fmt.Printf("%s id=%d action=%s ip=%s\n", rec.Time.Format(time.RFC3339), rec.ID, rec.Action, rec.SenderIP)
+			}
+			if len(env.Result.Records) == 0 {
+				fmt.Println("(no records)")
+			} else {
+				fmt.Printf("cursor=%d seq=%d\n", env.Result.Cursor, env.Result.Seq)
+			}
+			return nil
+		},
+	}
+	c.Flags().Uint64Var(&since, "since", 0, "only records with id greater than this (audit cursor)")
+	c.Flags().IntVar(&limit, "limit", 50, "max records to return")
+	return c
 }
 
 func newOpenCmd() *cobra.Command {

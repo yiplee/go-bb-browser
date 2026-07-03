@@ -7,6 +7,7 @@ import (
 
 	"github.com/chromedp/cdproto/target"
 	"github.com/yiplee/go-bb-browser/internal/state"
+	"github.com/yiplee/go-bb-browser/internal/store"
 )
 
 var (
@@ -14,10 +15,22 @@ var (
 	errTabCloseUnknownID = errors.New("unknown tab id")
 )
 
-func (s *Server) markTabManaged(tid target.ID) {
+func (s *Server) markTabManaged(tid target.ID, short, openURL string, silent bool) {
 	if s.tabIdle != nil {
 		s.tabIdle.MarkManaged(tid)
-		s.persistTabIdle()
+	}
+	if s.store != nil {
+		now := time.Now().UTC()
+		if err := s.store.PutTab(store.TabRecord{
+			TargetID:       string(tid),
+			ShortID:        short,
+			OpenURL:        openURL,
+			OpenedAt:       now,
+			LastActivityAt: now,
+			Silent:         silent,
+		}); err != nil && s.logger != nil {
+			s.logger.Warn("put tab record failed", "err", err)
+		}
 	}
 }
 
@@ -25,14 +38,21 @@ func (s *Server) touchTabActivity(tid target.ID) {
 	if s.tabIdle != nil {
 		s.tabIdle.Touch(tid)
 	}
+	if s.store != nil {
+		if err := s.store.TouchTab(string(tid), time.Now().UTC()); err != nil && s.logger != nil {
+			s.logger.Warn("touch tab record failed", "err", err)
+		}
+	}
 }
 
-func (s *Server) persistTabIdle() {
-	if s.tabState == nil || s.tabIdle == nil {
-		return
+func (s *Server) forgetTabManaged(tid target.ID) {
+	if s.tabIdle != nil {
+		s.tabIdle.Forget(tid)
 	}
-	if err := s.tabState.Save(s.tabIdle.Snapshot()); err != nil && s.logger != nil {
-		s.logger.Warn("save tab state failed", "err", err)
+	if s.store != nil {
+		if err := s.store.DeleteTab(string(tid)); err != nil && s.logger != nil {
+			s.logger.Warn("delete tab record failed", "err", err)
+		}
 	}
 }
 
@@ -53,19 +73,22 @@ func (s *Server) syncTabIdlePresence(snaps []state.TabSnapshot) {
 		}
 		present[sn.TargetID] = struct{}{}
 	}
-	s.tabIdle.SyncPresent(present)
+	removed := s.tabIdle.SyncPresentReturnRemoved(present)
+	for _, tid := range removed {
+		s.forgetTabManaged(tid)
+	}
 }
 
 func (s *Server) reconcileIdleFromDisk(snaps []state.TabSnapshot) {
-	if s.tabIdle == nil || s.tabState == nil {
+	if s.tabIdle == nil || s.store == nil {
 		return
 	}
-	loaded, err := s.tabState.Load()
+	loaded, err := s.store.ListTabs()
 	if err != nil {
 		if s.logger != nil {
-			s.logger.Warn("load tab state failed", "err", err)
+			s.logger.Warn("load tab records failed", "err", err)
 		}
-		loaded = map[target.ID]time.Time{}
+		loaded = nil
 	}
 
 	now := time.Now()
@@ -82,16 +105,19 @@ func (s *Server) reconcileIdleFromDisk(snaps []state.TabSnapshot) {
 			continue
 		}
 		present[sn.TargetID] = struct{}{}
-		if last, ok := loaded[sn.TargetID]; ok {
-			effective := last
-			if effective.Before(minLast) {
-				effective = minLast
-			}
-			s.tabIdle.MarkManagedAt(sn.TargetID, effective)
-		}
 	}
-	s.tabIdle.SyncPresent(present)
-	s.persistTabIdle()
+	for _, rec := range loaded {
+		tid := target.ID(rec.TargetID)
+		if _, ok := present[tid]; !ok {
+			continue
+		}
+		effective := rec.LastActivityAt
+		if effective.Before(minLast) {
+			effective = minLast
+		}
+		s.tabIdle.MarkManagedAt(tid, effective)
+	}
+	s.syncTabIdlePresence(snaps)
 }
 
 func (s *Server) closeTabByShort(tab string) error {
@@ -120,10 +146,7 @@ func (s *Server) closeTabByShort(tab string) error {
 		s.syncTabsFromTargets(targets)
 		s.syncObservation(conn, targets)
 	}
-	if s.tabIdle != nil {
-		s.tabIdle.Forget(tid)
-		s.persistTabIdle()
-	}
+	s.forgetTabManaged(tid)
 	return nil
 }
 
@@ -167,16 +190,12 @@ func (s *Server) closeExpiredTabs(ctx context.Context) {
 		}
 		short, ok := s.tabs.ShortForTarget(tid)
 		if !ok {
-			if s.tabIdle != nil {
-				s.tabIdle.Forget(tid)
-			}
+			s.forgetTabManaged(tid)
 			continue
 		}
 		if err := s.closeTabByShort(short); err != nil {
 			if errors.Is(err, errTabCloseUnknownID) {
-				if s.tabIdle != nil {
-					s.tabIdle.Forget(tid)
-				}
+				s.forgetTabManaged(tid)
 				continue
 			}
 			if s.logger != nil {
@@ -188,5 +207,4 @@ func (s *Server) closeExpiredTabs(ctx context.Context) {
 			s.logger.Info("tab idle closed", "tab", short, "idle", timeout)
 		}
 	}
-	s.persistTabIdle()
 }

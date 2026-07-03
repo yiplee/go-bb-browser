@@ -27,7 +27,7 @@ type Config struct {
 	// TabIdleTimeout closes daemon-created tabs after this idle period; 0 disables cleanup.
 	TabIdleTimeout time.Duration
 
-	// StateDir holds persisted managed-tab idle state (tabs.json). Empty disables persistence.
+	// StateDir holds daemon Badger state (managed tabs, RPC audit, global seq). "-" uses in-memory Badger.
 	StateDir string
 
 	// IdleStartupGrace prevents immediate mass-close of restored tabs after daemon restart.

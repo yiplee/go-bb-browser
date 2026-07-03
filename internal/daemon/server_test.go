@@ -14,6 +14,7 @@ func TestHealthGet(t *testing.T) {
 	cfg := Config{
 		DebuggerURL: "127.0.0.1:9222",
 		ListenAddr:  "127.0.0.1:0",
+		StateDir:    stateDirDisabled,
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
@@ -43,6 +44,7 @@ func TestHealthPostMethodNotAllowed(t *testing.T) {
 	cfg := Config{
 		DebuggerURL: "127.0.0.1:9222",
 		ListenAddr:  "127.0.0.1:0",
+		StateDir:    stateDirDisabled,
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
@@ -79,6 +81,7 @@ func TestListenAndServeShutdown(t *testing.T) {
 	cfg := Config{
 		DebuggerURL: "127.0.0.1:9222",
 		ListenAddr:  addr,
+		StateDir:    stateDirDisabled,
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)

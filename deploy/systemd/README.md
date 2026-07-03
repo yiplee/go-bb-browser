@@ -65,8 +65,8 @@ sudo loginctl enable-linger "$USER"
   Environment=BB_BROWSER_STATE_DIR=%h/.local/state/bb-daemon
   ```
 
-  Managed-tab idle state is written to `tabs.json` under that directory so idle
-  cleanup continues after daemon restarts. The unit's `ReadWritePaths=` already
+  Managed-tab metadata, global seq, and RPC audit logs are stored in Badger under `{StateDir}/badger/`
+  so idle cleanup continues after daemon restarts. The unit's `ReadWritePaths=` already
   allows `%h/.local/state/bb-daemon`; you may also set `StateDirectory=bb-daemon`
   under `[Service]` for systemd-managed state layout.
 

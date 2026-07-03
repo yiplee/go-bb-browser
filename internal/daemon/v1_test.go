@@ -122,7 +122,7 @@ func rpcReq(method string, params any, id any) string {
 }
 
 func TestV1TabListWithoutTabParam(t *testing.T) {
-	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0"}
+	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0", StateDir: stateDirDisabled}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestV1TabListWithoutTabParam(t *testing.T) {
 }
 
 func TestV1TabFocus(t *testing.T) {
-	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0"}
+	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0", StateDir: stateDirDisabled}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func TestV1TabFocus(t *testing.T) {
 }
 
 func TestV1TabFocusNoTabs(t *testing.T) {
-	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0"}
+	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0", StateDir: stateDirDisabled}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +224,7 @@ func TestV1TabFocusNoTabs(t *testing.T) {
 }
 
 func TestV1TabSelectUnknownTab(t *testing.T) {
-	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0"}
+	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0", StateDir: stateDirDisabled}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +256,7 @@ func TestV1TabSelectUnknownTab(t *testing.T) {
 }
 
 func TestV1TabNewSilentPreservesFocus(t *testing.T) {
-	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0"}
+	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0", StateDir: stateDirDisabled}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +325,7 @@ func TestV1TabNewSilentPreservesFocus(t *testing.T) {
 }
 
 func TestV1WorkflowTabNewGotoClose(t *testing.T) {
-	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0"}
+	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0", StateDir: stateDirDisabled}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -376,7 +376,7 @@ func TestV1WorkflowTabNewGotoClose(t *testing.T) {
 }
 
 func TestV1SeqMonotonicAcrossCalls(t *testing.T) {
-	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0"}
+	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0", StateDir: stateDirDisabled}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -416,7 +416,7 @@ func TestV1SeqMonotonicAcrossCalls(t *testing.T) {
 }
 
 func TestV1UnknownMethod(t *testing.T) {
-	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0"}
+	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0", StateDir: stateDirDisabled}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -440,7 +440,7 @@ func TestV1UnknownMethod(t *testing.T) {
 }
 
 func TestV1MissingID(t *testing.T) {
-	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0"}
+	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0", StateDir: stateDirDisabled}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}

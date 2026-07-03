@@ -63,16 +63,24 @@ func (t *TabIdleTracker) Forget(id target.ID) {
 
 // SyncPresent removes managed entries whose target id is no longer present in the browser.
 func (t *TabIdleTracker) SyncPresent(present map[target.ID]struct{}) {
+	t.SyncPresentReturnRemoved(present)
+}
+
+// SyncPresentReturnRemoved removes absent tabs and returns the removed target ids.
+func (t *TabIdleTracker) SyncPresentReturnRemoved(present map[target.ID]struct{}) []target.ID {
 	if t == nil {
-		return
+		return nil
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	var removed []target.ID
 	for id := range t.managed {
 		if _, ok := present[id]; !ok {
+			removed = append(removed, id)
 			delete(t.managed, id)
 		}
 	}
+	return removed
 }
 
 // Snapshot returns a copy of managed target ids and their last-activity times.

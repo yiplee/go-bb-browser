@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/chromedp/cdproto/target"
+	"github.com/yiplee/go-bb-browser/internal/store"
 	"github.com/yiplee/go-bb-browser/pkg/protocol"
 )
 
@@ -139,9 +140,12 @@ func TestTabIdleRestartRestoresManagedTab(t *testing.T) {
 	if len(fcA.infos) != 1 {
 		t.Fatalf("tab_new: %#v", fcA.infos)
 	}
-	statePath := filepath.Join(stateDir, tabStateFileName)
-	if _, err := os.Stat(statePath); err != nil {
-		t.Fatalf("expected state file: %v", err)
+	badgerPath := filepath.Join(stateDir, "badger")
+	if _, err := os.Stat(badgerPath); err != nil {
+		t.Fatalf("expected badger dir: %v", err)
+	}
+	if err := srvA.store.Close(); err != nil {
+		t.Fatal(err)
 	}
 
 	fcB := &fakeConn{infos: []*target.Info{
@@ -168,10 +172,21 @@ func TestTabIdleRestartGraceDelaysClose(t *testing.T) {
 	timeout := 80 * time.Millisecond
 	grace := 40 * time.Millisecond
 	tabID := target.ID("ABCDEF999999")
-
-	store := newTabStateStore(stateDir)
 	expiredAt := time.Now().Add(-timeout - time.Millisecond)
-	if err := store.Save(map[target.ID]time.Time{tabID: expiredAt}); err != nil {
+
+	st, err := store.Open(store.OpenConfig{StateDir: stateDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutTab(store.TabRecord{
+		TargetID:       string(tabID),
+		ShortID:        "9999",
+		OpenedAt:       expiredAt,
+		LastActivityAt: expiredAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -205,7 +220,7 @@ func TestTabIdleRestartGraceDelaysClose(t *testing.T) {
 	}
 }
 
-func TestTabStateStoreUnwritableDirDisablesPersistence(t *testing.T) {
+func TestUnwritableStateDirUsesInMemoryBadger(t *testing.T) {
 	readOnlyDir := t.TempDir()
 	if err := os.Chmod(readOnlyDir, 0o555); err != nil {
 		t.Skip("cannot chmod read-only:", err)
@@ -223,8 +238,11 @@ func TestTabStateStoreUnwritableDirDisablesPersistence(t *testing.T) {
 	}
 
 	srv := NewServer(cfg, nil)
-	if srv.tabState != nil {
-		t.Fatal("expected persistence disabled for unwritable state dir")
+	if srv.store == nil {
+		t.Fatal("expected store")
+	}
+	if !srv.store.InMemory() {
+		t.Fatal("expected in-memory badger for unwritable state dir")
 	}
 	fc := &fakeConn{infos: []*target.Info{}}
 	srv.tabHook = fc

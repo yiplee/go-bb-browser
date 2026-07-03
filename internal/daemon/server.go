@@ -8,12 +8,14 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/chromedp/cdproto/target"
 	"github.com/yiplee/go-bb-browser/internal/browser"
 	"github.com/yiplee/go-bb-browser/internal/state"
+	"github.com/yiplee/go-bb-browser/internal/store"
 )
 
 // Server is the HTTP API front-end for the daemon (JSON-RPC over POST /v1).
@@ -22,7 +24,7 @@ type Server struct {
 	logger *slog.Logger
 	mux    *http.ServeMux
 
-	seq      state.SeqGen
+	store    *store.Store
 	tabs     *state.TabRegistry
 	tabMu    sync.RWMutex
 	tabLive  tabConn // set after CDP connect in ListenAndServe
@@ -35,7 +37,6 @@ type Server struct {
 	obsStore *state.TabObsStore
 	obsSink  *obsSink
 	tabIdle  *state.TabIdleTracker
-	tabState *tabStateStore
 
 	tabMuOps    sync.Mutex
 	tabCDPLocks map[string]*sync.Mutex // per short tab id
@@ -51,15 +52,23 @@ func NewServer(cfg Config, logger *slog.Logger) *Server {
 	}
 	obsStore := state.NewTabObsStore()
 	s := &Server{
-		cfg:       cfg,
-		logger:    logger,
-		mux:       http.NewServeMux(),
-		tabs:      state.NewTabRegistry(),
-		obsStore:  obsStore,
+		cfg:      cfg,
+		logger:   logger,
+		mux:      http.NewServeMux(),
+		tabs:     state.NewTabRegistry(),
+		obsStore: obsStore,
 		tabIdle:  state.NewTabIdleTracker(),
 	}
-	s.tabState = initTabStateStore(effectiveStateDir(cfg), logger)
-	s.obsSink = &obsSink{seq: &s.seq, store: obsStore}
+	stateDir := effectiveStateDir(cfg)
+	if strings.TrimSpace(cfg.StateDir) == stateDirDisabled {
+		stateDir = stateDirDisabled
+	}
+	st, err := store.Open(store.OpenConfig{StateDir: stateDir, Logger: logger})
+	if err != nil {
+		panic(fmt.Sprintf("badger store: %v", err))
+	}
+	s.store = st
+	s.obsSink = &obsSink{store: st, obs: obsStore}
 	s.routes()
 	return s
 }
@@ -171,6 +180,9 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 			return fmt.Errorf("http shutdown: %w", err)
 		}
 		<-errCh
+		if s.store != nil {
+			_ = s.store.Close()
+		}
 		return nil
 	case err := <-errCh:
 		return err
