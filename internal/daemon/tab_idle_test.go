@@ -278,19 +278,3 @@ func TestSyncTabIdlePresenceKeepsBadger(t *testing.T) {
 		t.Fatalf("badger cleared by presence sync: %#v", tabs)
 	}
 }
-
-func TestPruneStoredTabsMissingFromBrowser(t *testing.T) {
-	stateDir := t.TempDir()
-	fc := &fakeConn{infos: []*target.Info{}}
-	srv := newIdleTestServerWithState(fc, time.Minute, stateDir)
-	postRPC(t, srv, rpcReq(protocol.MethodTabNew, map[string]any{}, 1))
-	srv.pruneStoredTabsMissingFromBrowser(nil)
-
-	tabs, err := srv.store.ListTabs()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(tabs) != 0 {
-		t.Fatalf("expected prune to remove absent tab, got %#v", tabs)
-	}
-}

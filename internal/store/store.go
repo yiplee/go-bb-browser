@@ -37,14 +37,16 @@ type Store struct {
 	inMemory  bool
 }
 
-// AuditRecord is one persisted JSON-RPC call.
+// AuditRecord is a compact summary of one persisted RPC call.
 type AuditRecord struct {
-	ID       uint64          `json:"id"`
-	Action   string          `json:"action"`
-	Body     json.RawMessage `json:"body"`
-	SenderIP string          `json:"sender_ip"`
-	Time     time.Time       `json:"time"`
-	Response json.RawMessage `json:"response"`
+	ID       uint64    `json:"id"`
+	Action   string    `json:"action"`
+	Tab      string    `json:"tab,omitempty"`
+	SenderIP string    `json:"sender_ip"`
+	Seq      uint64    `json:"seq,omitempty"`
+	OK       bool      `json:"ok"`
+	Error    string    `json:"error,omitempty"`
+	Time     time.Time `json:"time"`
 }
 
 // TabRecord is persisted metadata for a daemon-created tab.

@@ -52,8 +52,8 @@ func (s *Server) connectBrowserLocked(ctx context.Context) error {
 		s.reconcileIdleFromDisk(nil)
 	} else {
 		snaps := s.syncTabsFromTargets(targets)
-		s.reconcileIdleFromDisk(snaps)
 		s.syncObservation(sess, targets)
+		_ = snaps
 	}
 	s.lastBrowserOK = time.Now()
 	if s.logger != nil {

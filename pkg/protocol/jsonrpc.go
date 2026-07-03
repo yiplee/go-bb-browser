@@ -344,14 +344,16 @@ type AuditListParams struct {
 	Limit int    `json:"limit,omitempty"`
 }
 
-// AuditRecord is one persisted RPC call in the audit log.
+// AuditRecord is one persisted RPC call summary in the audit log.
 type AuditRecord struct {
-	ID       uint64          `json:"id"`
-	Action   string          `json:"action"`
-	Body     json.RawMessage `json:"body"`
-	SenderIP string          `json:"sender_ip"`
-	Time     time.Time       `json:"time"`
-	Response json.RawMessage `json:"response"`
+	ID       uint64    `json:"id"`
+	Action   string    `json:"action"`
+	Tab      string    `json:"tab,omitempty"`
+	SenderIP string    `json:"sender_ip"`
+	Seq      uint64    `json:"seq,omitempty"`
+	OK       bool      `json:"ok"`
+	Error    string    `json:"error,omitempty"`
+	Time     time.Time `json:"time"`
 }
 
 // AuditListResult is the payload for audit_list (INV-1, INV-2 style cursor).

@@ -54,8 +54,11 @@ func TestV1AuditListAfterTabList(t *testing.T) {
 	if env.Result.Records[0].SenderIP != "203.0.113.9" {
 		t.Fatalf("sender_ip %q", env.Result.Records[0].SenderIP)
 	}
-	if env.Result.Seq == 0 {
-		t.Fatal("expected seq in audit_list result")
+	if !env.Result.Records[0].OK {
+		t.Fatalf("expected ok audit record")
+	}
+	if env.Result.Records[0].Seq == 0 {
+		t.Fatal("expected seq in audit record")
 	}
 
 	time.Sleep(20 * time.Millisecond)
@@ -77,5 +80,24 @@ func TestV1AuditListAfterTabList(t *testing.T) {
 		if rec.Action == protocol.MethodAuditList {
 			t.Fatal("audit_list should not appear in audit log")
 		}
+	}
+}
+
+func TestAuditListWithoutBrowserSession(t *testing.T) {
+	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0", StateDir: "-"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.SkipBrowserAttach = true
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1", bytes.NewBufferString(rpcReq(protocol.MethodAuditList, map[string]any{}, 1)))
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("audit_list without browser: status %d %s", rec.Code, rec.Body.String())
 	}
 }

@@ -1,7 +1,6 @@
 package store
 
 import (
-	"encoding/json"
 	"sync"
 	"testing"
 	"time"
@@ -71,17 +70,15 @@ func TestNextSeqConcurrentUnique(t *testing.T) {
 
 func TestAuditAppendList(t *testing.T) {
 	s := openTestStore(t)
-	body := json.RawMessage(`{"jsonrpc":"2.0","method":"tab_list","id":1}`)
-	resp := json.RawMessage(`{"jsonrpc":"2.0","result":{"seq":1},"id":1}`)
 	at := time.Now().UTC().Truncate(time.Millisecond)
 
 	if err := s.AppendAudit(AuditRecord{
 		ID:       1,
 		Action:   protocol.MethodTabList,
-		Body:     body,
 		SenderIP: "127.0.0.1",
+		Seq:      1,
+		OK:       true,
 		Time:     at,
-		Response: resp,
 	}); err != nil {
 		t.Fatal(err)
 	}

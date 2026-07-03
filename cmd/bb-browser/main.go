@@ -133,7 +133,19 @@ func newAuditCmd() *cobra.Command {
 				return err
 			}
 			for _, rec := range env.Result.Records {
-				fmt.Printf("%s id=%d action=%s ip=%s\n", rec.Time.Format(time.RFC3339), rec.ID, rec.Action, rec.SenderIP)
+				status := "ok"
+				if !rec.OK {
+					status = "error"
+					if rec.Error != "" {
+						status = "error:" + rec.Error
+					}
+				}
+				tab := rec.Tab
+				if tab == "" {
+					tab = "-"
+				}
+				fmt.Printf("%s id=%d action=%s tab=%s seq=%d %s ip=%s\n",
+					rec.Time.Format(time.RFC3339), rec.ID, rec.Action, tab, rec.Seq, status, rec.SenderIP)
 			}
 			if len(env.Result.Records) == 0 {
 				fmt.Println("(no records)")

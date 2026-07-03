@@ -171,17 +171,21 @@ func (s *Server) scheduleAudit(ctx context.Context, resp []byte) {
 		return
 	}
 	action := meta.action
-	body := store.SanitizeRequest(action, meta.body)
 	senderIP := meta.senderIP
 	at := meta.at
-	sanitized := store.SanitizeResponse(action, resp)
+	tab, seq, ok, errMsg := store.ParseRPCAuditSummary(resp)
+	if tab == "" {
+		tab = store.TabFromRequestBody(meta.body)
+	}
 	rec := store.AuditRecord{
 		ID:       auditID,
 		Action:   action,
-		Body:     body,
+		Tab:      tab,
 		SenderIP: senderIP,
+		Seq:      seq,
+		OK:       ok,
+		Error:    errMsg,
 		Time:     at,
-		Response: sanitized,
 	}
 	go func() {
 		if err := s.store.AppendAudit(rec); err != nil && s.logger != nil {
@@ -1162,10 +1166,12 @@ func (s *Server) handleAuditList(ctx context.Context, w http.ResponseWriter, id 
 		out = append(out, protocol.AuditRecord{
 			ID:       rec.ID,
 			Action:   rec.Action,
-			Body:     rec.Body,
+			Tab:      rec.Tab,
 			SenderIP: rec.SenderIP,
+			Seq:      rec.Seq,
+			OK:       rec.OK,
+			Error:    rec.Error,
 			Time:     rec.Time,
-			Response: rec.Response,
 		})
 	}
 	seq, ok := s.nextSeq(ctx, w, id)
