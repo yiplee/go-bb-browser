@@ -46,7 +46,7 @@ type Server struct {
 }
 
 // NewServer builds a daemon HTTP server with the given config (must pass Validate).
-func NewServer(cfg Config, logger *slog.Logger) *Server {
+func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -65,12 +65,12 @@ func NewServer(cfg Config, logger *slog.Logger) *Server {
 	}
 	st, err := store.Open(store.OpenConfig{StateDir: stateDir, Logger: logger})
 	if err != nil {
-		panic(fmt.Sprintf("badger store: %v", err))
+		return nil, fmt.Errorf("badger store: %w", err)
 	}
 	s.store = st
-	s.obsSink = &obsSink{store: st, obs: obsStore}
+	s.obsSink = &obsSink{store: st, obs: obsStore, logger: logger}
 	s.routes()
-	return s
+	return s, nil
 }
 
 // syncObservation aligns CDP tab observers and clears buffers for removed targets (Phase 3).
@@ -126,6 +126,12 @@ func (s *Server) handleHealthGet(w http.ResponseWriter, _ *http.Request) {
 
 // ListenAndServe starts the HTTP server until ctx is cancelled or Listen fails.
 func (s *Server) ListenAndServe(ctx context.Context) error {
+	defer func() {
+		if s.store != nil {
+			_ = s.store.Close()
+		}
+	}()
+
 	if !s.SkipBrowserAttach && s.tabHook == nil {
 		s.tabMu.Lock()
 		if err := s.connectBrowserLocked(ctx); err != nil {
@@ -180,9 +186,6 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 			return fmt.Errorf("http shutdown: %w", err)
 		}
 		<-errCh
-		if s.store != nil {
-			_ = s.store.Close()
-		}
 		return nil
 	case err := <-errCh:
 		return err

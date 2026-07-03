@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
@@ -31,12 +30,11 @@ type OpenConfig struct {
 
 // Store is a Badger-backed persistence layer for global seq, RPC audit, and managed tabs.
 type Store struct {
-	db       *badger.DB
+	db        *badger.DB
 	globalSeq *badger.Sequence
 	auditSeq  *badger.Sequence
 	logger    *slog.Logger
 	inMemory  bool
-	mu        sync.Mutex
 }
 
 // AuditRecord is one persisted JSON-RPC call.
@@ -172,25 +170,26 @@ func (s *Store) nextAuditID() (uint64, error) {
 	return n + 1, nil
 }
 
-func auditKey(at time.Time, id uint64) []byte {
-	return []byte(fmt.Sprintf("%s%020d/%010d", auditKeyPrefix, at.UnixNano(), id))
+// NextAuditID allocates the next audit record id (for synchronous assignment before async write).
+func (s *Store) NextAuditID() (uint64, error) {
+	return s.nextAuditID()
+}
+
+func auditKey(id uint64) []byte {
+	return []byte(fmt.Sprintf("%s%020d", auditKeyPrefix, id))
 }
 
 func tabKey(targetID string) []byte {
 	return []byte(tabKeyPrefix + targetID)
 }
 
-// AppendAudit persists one RPC audit record (response should already be sanitized).
+// AppendAudit persists one RPC audit record (request/response should already be sanitized).
 func (s *Store) AppendAudit(rec AuditRecord) error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("store not initialized")
 	}
 	if rec.ID == 0 {
-		id, err := s.nextAuditID()
-		if err != nil {
-			return err
-		}
-		rec.ID = id
+		return fmt.Errorf("audit record id required")
 	}
 	if rec.Time.IsZero() {
 		rec.Time = time.Now().UTC()
@@ -199,7 +198,7 @@ func (s *Store) AppendAudit(rec AuditRecord) error {
 	if err != nil {
 		return err
 	}
-	key := auditKey(rec.Time, rec.ID)
+	key := auditKey(rec.ID)
 	return s.db.Update(func(txn *badger.Txn) error {
 		return txn.Set(key, data)
 	})
@@ -224,7 +223,8 @@ func (s *Store) ListAudit(since uint64, limit int) ([]AuditRecord, uint64, error
 		it := txn.NewIterator(badger.DefaultIteratorOptions)
 		defer it.Close()
 		prefix := []byte(auditKeyPrefix)
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+		start := auditKey(since + 1)
+		for it.Seek(start); it.ValidForPrefix(prefix); it.Next() {
 			item := it.Item()
 			var rec AuditRecord
 			if err := item.Value(func(val []byte) error {

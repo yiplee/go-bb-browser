@@ -49,11 +49,12 @@ func (s *Server) connectBrowserLocked(ctx context.Context) error {
 		if s.logger != nil {
 			s.logger.Warn("list targets after browser connect", "err", terr)
 		}
-		targets = nil
+		s.reconcileIdleFromDisk(nil)
+	} else {
+		snaps := s.syncTabsFromTargets(targets)
+		s.reconcileIdleFromDisk(snaps)
+		s.syncObservation(sess, targets)
 	}
-	snaps := s.syncTabsFromTargets(targets)
-	s.reconcileIdleFromDisk(snaps)
-	s.syncObservation(sess, targets)
 	s.lastBrowserOK = time.Now()
 	if s.logger != nil {
 		s.logger.Info("browser CDP session connected", "debugger", s.cfg.DebuggerURL)

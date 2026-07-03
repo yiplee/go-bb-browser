@@ -126,7 +126,10 @@ func TestV1TabListWithoutTabParam(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv.tabHook = &fakeConn{infos: []*target.Info{
 		{TargetID: "ABCDEF123456", Type: "page", Title: "t", URL: "https://ex"},
 	}}
@@ -164,7 +167,10 @@ func TestV1TabFocus(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv.tabHook = &fakeConn{infos: []*target.Info{
 		{TargetID: "ABCDEF123456", Type: "page", Title: "t", URL: "https://ex"},
 	}}
@@ -202,7 +208,10 @@ func TestV1TabFocusNoTabs(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv.tabHook = &fakeConn{infos: []*target.Info{}}
 
 	body := bytes.NewBufferString(rpcReq(protocol.MethodTabFocus, map[string]any{}, 1))
@@ -228,7 +237,10 @@ func TestV1TabSelectUnknownTab(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv.tabHook = &fakeConn{infos: []*target.Info{
 		{TargetID: "ABCDEF123456", Type: "page"},
 	}}
@@ -260,7 +272,10 @@ func TestV1TabNewSilentPreservesFocus(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv.tabHook = &fakeConn{infos: []*target.Info{
 		{TargetID: "ABCDEF123456", Type: "page", Title: "first", URL: "https://a"},
 	}, createID: "CAFEBABE0001"}
@@ -329,7 +344,10 @@ func TestV1WorkflowTabNewGotoClose(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv.tabHook = &fakeConn{
 		infos:    []*target.Info{},
 		createID: "CAFEBABE0001",
@@ -380,7 +398,10 @@ func TestV1SeqMonotonicAcrossCalls(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv.tabHook = &fakeConn{
 		infos: []*target.Info{
 			{TargetID: "ABCDEF123456", Type: "page"},
@@ -420,7 +441,10 @@ func TestV1UnknownMethod(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv.tabHook = &fakeConn{infos: []*target.Info{}}
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1",
@@ -444,7 +468,10 @@ func TestV1MissingID(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1",
 		bytes.NewBufferString(`{"jsonrpc":"2.0","method":"tab_list"}`)))

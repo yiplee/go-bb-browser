@@ -19,7 +19,10 @@ func TestHealthGet(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
@@ -49,7 +52,10 @@ func TestHealthPostMethodNotAllowed(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
@@ -86,7 +92,10 @@ func TestListenAndServeShutdown(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv.SkipBrowserAttach = true
 
 	ctx, cancel := context.WithCancel(context.Background())

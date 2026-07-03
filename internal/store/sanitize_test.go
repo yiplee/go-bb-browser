@@ -9,21 +9,20 @@ import (
 	"github.com/yiplee/go-bb-browser/pkg/protocol"
 )
 
-func TestClientIP(t *testing.T) {
+func TestClientIPRemoteAddr(t *testing.T) {
 	r := httptest.NewRequest("POST", "/v1", nil)
 	r.RemoteAddr = "192.168.1.5:43210"
 	if got := ClientIP(r); got != "192.168.1.5" {
 		t.Fatalf("RemoteAddr: got %q", got)
 	}
+}
 
-	r.Header.Set("X-Real-IP", "10.0.0.2")
-	if got := ClientIP(r); got != "10.0.0.2" {
-		t.Fatalf("X-Real-IP: got %q", got)
-	}
-
-	r.Header.Set("X-Forwarded-For", "203.0.113.1, 198.51.100.2")
-	if got := ClientIP(r); got != "203.0.113.1" {
-		t.Fatalf("XFF: got %q", got)
+func TestClientIPIgnoresXFF(t *testing.T) {
+	r := httptest.NewRequest("POST", "/v1", nil)
+	r.RemoteAddr = "127.0.0.1:8787"
+	r.Header.Set("X-Forwarded-For", "203.0.113.1")
+	if got := ClientIP(r); got != "127.0.0.1" {
+		t.Fatalf("expected RemoteAddr, got %q", got)
 	}
 }
 
@@ -95,5 +94,29 @@ func TestSanitizePassthrough(t *testing.T) {
 	out := SanitizeResponse(protocol.MethodTabList, in)
 	if string(out) != string(in) {
 		t.Fatalf("unexpected change: %s", out)
+	}
+}
+
+func TestSanitizeRequestEvalScript(t *testing.T) {
+	in := []byte(`{"jsonrpc":"2.0","method":"eval","params":{"tab":"a","script":"secret()"},"id":1}`)
+	out := SanitizeRequest(protocol.MethodEval, in)
+	if string(out) == string(in) {
+		t.Fatal("expected script redaction")
+	}
+}
+
+func TestSanitizeSnapshotResponse(t *testing.T) {
+	bigText := strings.Repeat("x", maxSnapshotText+100)
+	in, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"result":  map[string]any{"tab": "a", "seq": 1, "text": bigText, "refs": map[string]string{"@1": "x"}},
+		"id":      1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := SanitizeResponse(protocol.MethodSnapshot, in)
+	if string(out) == string(in) {
+		t.Fatal("expected snapshot sanitization")
 	}
 }

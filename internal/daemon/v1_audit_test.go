@@ -17,7 +17,10 @@ func TestV1AuditListAfterTabList(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv.tabHook = &fakeConn{infos: []*target.Info{}}
 
 	rec := httptest.NewRecorder()

@@ -75,6 +75,11 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	if method == protocol.MethodAuditList {
+		s.handleAuditList(ctx, w, id, params)
+		return
+	}
+
 	if err := s.ensureBrowserSession(ctx); err != nil {
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "browser not connected", &protocol.ErrData{
 			Error: "could not connect to browser",
@@ -126,8 +131,6 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		s.handleConsoleClear(ctx, w, id, params)
 	case protocol.MethodErrorsClear:
 		s.handleErrorsClear(ctx, w, id, params)
-	case protocol.MethodAuditList:
-		s.handleAuditList(ctx, w, id, params)
 	default:
 		if method == "" {
 			s.rpcErr(ctx, w, id, protocol.CodeInvalidRequest, "missing method", nil)
@@ -160,19 +163,28 @@ func (s *Server) scheduleAudit(ctx context.Context, resp []byte) {
 	if meta == nil || s.store == nil {
 		return
 	}
+	auditID, err := s.store.NextAuditID()
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("audit id allocation failed", "err", err, "action", meta.action)
+		}
+		return
+	}
 	action := meta.action
-	body := meta.body
+	body := store.SanitizeRequest(action, meta.body)
 	senderIP := meta.senderIP
 	at := meta.at
 	sanitized := store.SanitizeResponse(action, resp)
+	rec := store.AuditRecord{
+		ID:       auditID,
+		Action:   action,
+		Body:     body,
+		SenderIP: senderIP,
+		Time:     at,
+		Response: sanitized,
+	}
 	go func() {
-		if err := s.store.AppendAudit(store.AuditRecord{
-			Action:   action,
-			Body:     body,
-			SenderIP: senderIP,
-			Time:     at,
-			Response: sanitized,
-		}); err != nil && s.logger != nil {
+		if err := s.store.AppendAudit(rec); err != nil && s.logger != nil {
 			s.logger.Warn("append audit failed", "err", err, "action", action)
 		}
 	}()

@@ -76,6 +76,7 @@ func TestAuditAppendList(t *testing.T) {
 	at := time.Now().UTC().Truncate(time.Millisecond)
 
 	if err := s.AppendAudit(AuditRecord{
+		ID:       1,
 		Action:   protocol.MethodTabList,
 		Body:     body,
 		SenderIP: "127.0.0.1",
@@ -105,6 +106,22 @@ func TestAuditAppendList(t *testing.T) {
 	}
 	if len(recs2) != 0 {
 		t.Fatalf("expected no more records, got %d", len(recs2))
+	}
+}
+
+func TestListAuditSeekByID(t *testing.T) {
+	s := openTestStore(t)
+	for i := uint64(1); i <= 3; i++ {
+		if err := s.AppendAudit(AuditRecord{ID: i, Action: protocol.MethodTabList}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recs, cursor, err := s.ListAudit(1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 2 || cursor != 3 {
+		t.Fatalf("records %#v cursor %d", recs, cursor)
 	}
 }
 

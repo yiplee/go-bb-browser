@@ -31,7 +31,10 @@ func newIdleTestServerWithState(fc *fakeConn, timeout time.Duration, stateDir st
 	if err := cfg.Validate(); err != nil {
 		panic(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		panic(err)
+	}
 	srv.tabHook = fc
 	return srv
 }
@@ -203,7 +206,10 @@ func TestTabIdleRestartGraceDelaysClose(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv.tabHook = fc
 	snaps := srv.syncTabsFromTargets(fc.infos)
 	srv.reconcileIdleFromDisk(snaps)
@@ -237,7 +243,10 @@ func TestUnwritableStateDirUsesInMemoryBadger(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if srv.store == nil {
 		t.Fatal("expected store")
 	}
@@ -247,4 +256,41 @@ func TestUnwritableStateDirUsesInMemoryBadger(t *testing.T) {
 	fc := &fakeConn{infos: []*target.Info{}}
 	srv.tabHook = fc
 	postRPC(t, srv, rpcReq(protocol.MethodTabNew, map[string]any{}, 1))
+}
+
+func TestSyncTabIdlePresenceKeepsBadger(t *testing.T) {
+	stateDir := t.TempDir()
+	fc := &fakeConn{infos: []*target.Info{}}
+	srv := newIdleTestServerWithState(fc, time.Minute, stateDir)
+	postRPC(t, srv, rpcReq(protocol.MethodTabNew, map[string]any{}, 1))
+	if len(fc.infos) != 1 {
+		t.Fatal("expected tab")
+	}
+	tid := fc.infos[0].TargetID
+
+	srv.syncTabIdlePresence(nil)
+
+	tabs, err := srv.store.ListTabs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tabs) != 1 || tabs[0].TargetID != string(tid) {
+		t.Fatalf("badger cleared by presence sync: %#v", tabs)
+	}
+}
+
+func TestPruneStoredTabsMissingFromBrowser(t *testing.T) {
+	stateDir := t.TempDir()
+	fc := &fakeConn{infos: []*target.Info{}}
+	srv := newIdleTestServerWithState(fc, time.Minute, stateDir)
+	postRPC(t, srv, rpcReq(protocol.MethodTabNew, map[string]any{}, 1))
+	srv.pruneStoredTabsMissingFromBrowser(nil)
+
+	tabs, err := srv.store.ListTabs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tabs) != 0 {
+		t.Fatalf("expected prune to remove absent tab, got %#v", tabs)
+	}
 }

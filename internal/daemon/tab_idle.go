@@ -59,6 +59,7 @@ func (s *Server) forgetTabManaged(tid target.ID) {
 func (s *Server) syncTabsFromTargets(infos []*target.Info) []state.TabSnapshot {
 	snaps := s.tabs.SyncPageTargets(infos)
 	s.syncTabIdlePresence(snaps)
+	s.pruneStoredTabsMissingFromBrowser(snaps)
 	return snaps
 }
 
@@ -73,9 +74,33 @@ func (s *Server) syncTabIdlePresence(snaps []state.TabSnapshot) {
 		}
 		present[sn.TargetID] = struct{}{}
 	}
-	removed := s.tabIdle.SyncPresentReturnRemoved(present)
-	for _, tid := range removed {
-		s.forgetTabManaged(tid)
+	s.tabIdle.SyncPresent(present)
+}
+
+// pruneStoredTabsMissingFromBrowser removes Badger tab records only after a successful
+// PageTargets sync shows the target is no longer present in the browser.
+func (s *Server) pruneStoredTabsMissingFromBrowser(snaps []state.TabSnapshot) {
+	if s.store == nil {
+		return
+	}
+	present := make(map[target.ID]struct{}, len(snaps))
+	for _, sn := range snaps {
+		if sn.TargetID != "" {
+			present[sn.TargetID] = struct{}{}
+		}
+	}
+	loaded, err := s.store.ListTabs()
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("list tab records for prune failed", "err", err)
+		}
+		return
+	}
+	for _, rec := range loaded {
+		tid := target.ID(rec.TargetID)
+		if _, ok := present[tid]; !ok {
+			s.forgetTabManaged(tid)
+		}
 	}
 }
 
