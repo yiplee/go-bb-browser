@@ -187,7 +187,9 @@ func (s *Server) scheduleAudit(ctx context.Context, resp []byte) {
 		Error:    errMsg,
 		Time:     at,
 	}
+	s.auditWG.Add(1)
 	go func() {
+		defer s.auditWG.Done()
 		if err := s.store.AppendAudit(rec); err != nil && s.logger != nil {
 			s.logger.Warn("append audit failed", "err", err, "action", action)
 		}

@@ -35,11 +35,11 @@ type Config struct {
 }
 
 const (
-	DefaultListenAddr         = "127.0.0.1:8787"
-	DefaultMaxBodyBytes       = 1 << 20 // 1 MiB
-	DefaultTabIdleTimeout     = 5 * time.Minute
-	DefaultIdleStartupGrace   = 30 * time.Second
-	defaultStateDirRel        = ".local/state/bb-daemon"
+	DefaultListenAddr       = "127.0.0.1:8787"
+	DefaultMaxBodyBytes     = 1 << 20 // 1 MiB
+	DefaultTabIdleTimeout   = 5 * time.Minute
+	DefaultIdleStartupGrace = 30 * time.Second
+	defaultStateDirRel      = ".local/state/bb-daemon"
 )
 
 // Validate checks required fields and normalizes DebuggerURL whitespace.

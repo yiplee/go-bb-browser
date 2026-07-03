@@ -15,7 +15,9 @@ import (
 const (
 	seqKey      = "meta/seq"
 	auditSeqKey = "meta/audit_id"
-	seqBandwidth  = uint64(100)
+	// seqBandwidth leases ids in blocks; unused ids in the last block are lost on
+	// restart, so seq/audit ids may jump forward (INV-4 monotonic, gaps allowed).
+	seqBandwidth = uint64(100)
 
 	auditKeyPrefix = "audit/"
 	tabKeyPrefix   = "tab/"

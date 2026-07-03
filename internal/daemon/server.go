@@ -41,6 +41,9 @@ type Server struct {
 	tabMuOps    sync.Mutex
 	tabCDPLocks map[string]*sync.Mutex // per short tab id
 
+	// auditWG tracks in-flight async audit writes so they are drained before the store closes.
+	auditWG sync.WaitGroup
+
 	// SkipBrowserAttach skips CDP connect in ListenAndServe (tests without Chrome).
 	SkipBrowserAttach bool
 }
@@ -128,6 +131,7 @@ func (s *Server) handleHealthGet(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) ListenAndServe(ctx context.Context) error {
 	defer func() {
 		if s.store != nil {
+			s.auditWG.Wait() // drain async audit writes before closing the store
 			_ = s.store.Close()
 		}
 	}()

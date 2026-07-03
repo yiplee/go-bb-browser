@@ -59,7 +59,6 @@ func (s *Server) forgetTabManaged(tid target.ID) {
 func (s *Server) syncTabsFromTargets(infos []*target.Info) []state.TabSnapshot {
 	snaps := s.tabs.SyncPageTargets(infos)
 	s.syncTabIdlePresence(snaps)
-	s.reconcileIdleFromDisk(snaps)
 	return snaps
 }
 
@@ -113,7 +112,10 @@ func (s *Server) reconcileIdleFromDisk(snaps []state.TabSnapshot) {
 		if effective.Before(minLast) {
 			effective = minLast
 		}
-		s.tabIdle.MarkManagedAt(tid, effective)
+		// Only restore tabs not already tracked in memory: reconciliation must
+		// never overwrite (or re-apply the startup grace to) live idle timers,
+		// otherwise repeated syncs would keep idle tabs alive forever.
+		s.tabIdle.MarkManagedIfAbsentAt(tid, effective)
 	}
 }
 

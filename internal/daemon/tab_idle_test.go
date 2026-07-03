@@ -117,6 +117,31 @@ func TestTabIdleDisabled(t *testing.T) {
 	}
 }
 
+func TestTabIdleRepeatedReconcileDoesNotRenew(t *testing.T) {
+	stateDir := t.TempDir()
+	timeout := 60 * time.Millisecond
+	fc := &fakeConn{infos: []*target.Info{}}
+	srv := newIdleTestServerWithState(fc, timeout, stateDir)
+
+	postRPC(t, srv, rpcReq(protocol.MethodTabNew, map[string]any{}, 1))
+	if len(fc.infos) != 1 {
+		t.Fatalf("tab_new: %#v", fc.infos)
+	}
+
+	// Simulate repeated target syncs (e.g. tab_list polling) while the tab sits
+	// idle. Reconciliation must not reset the already-tracked idle timer.
+	deadline := time.Now().Add(timeout + 40*time.Millisecond)
+	for time.Now().Before(deadline) {
+		srv.reconcileIdleFromDisk(srv.syncTabsFromTargets(fc.infos))
+		time.Sleep(15 * time.Millisecond)
+	}
+
+	srv.closeExpiredTabs(context.Background())
+	if len(fc.infos) != 0 {
+		t.Fatalf("idle tab kept alive by repeated reconcile: %#v", fc.infos)
+	}
+}
+
 func TestConfigValidateTabIdleTimeoutNegative(t *testing.T) {
 	cfg := Config{
 		DebuggerURL:    "127.0.0.1:9222",

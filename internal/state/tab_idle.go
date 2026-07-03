@@ -39,6 +39,21 @@ func (t *TabIdleTracker) MarkManagedAt(id target.ID, at time.Time) {
 	t.managed[id] = at
 }
 
+// MarkManagedIfAbsentAt registers a tab only if it is not already tracked, so
+// repeated disk reconciliation never overwrites (and never re-clamps) the
+// last-activity time of a tab that is already being tracked in memory.
+func (t *TabIdleTracker) MarkManagedIfAbsentAt(id target.ID, at time.Time) {
+	if t == nil || id == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if _, ok := t.managed[id]; ok {
+		return
+	}
+	t.managed[id] = at
+}
+
 // Touch updates last activity for a managed tab.
 func (t *TabIdleTracker) Touch(id target.ID) {
 	if t == nil || id == "" {

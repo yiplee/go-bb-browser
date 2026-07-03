@@ -112,7 +112,7 @@ func TestTabList_wrapper(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		var req struct {
-			Method string `json:"method"`
+			Method string          `json:"method"`
 			ID     json.RawMessage `json:"id"`
 		}
 		_ = json.Unmarshal(b, &req)
