@@ -41,7 +41,8 @@ go test ./...
 |------|------|
 | **`cmd/bb-daemon`** | 解析 `--debugger-url` / `--listen`（及对应环境变量），构造 `daemon.Config`，启动 `daemon.Server`。 |
 | **`internal/daemon`** | `http.ServeMux`：`GET /health` 返回 JSON `{"status":"ok"}`；`POST /v1` 解析 [JSON-RPC 2.0](https://www.jsonrpc.org/specification)，按 `method` 分发到各 handler。维护与 Chrome 的 **单一 CDP 会话**（启动时 `connectBrowserLocked`），失败时可重连（`ensureBrowserSession`）。 |
-| **`internal/state`** | **全局单调 `seq`**（`SeqGen`）；**短 tab id 注册表**（`TabRegistry`，关 tab 释放 id、清缓冲）；**按 tab 隔离的观测环形缓冲**（`TabObsStore` + `ringbuf`），满足 INV-1～INV-7 类不变量。 |
+| **`internal/store`** | **Badger**（磁盘 `{StateDir}/badger/` 或 in-memory）：**全局单调 `seq`**（Badger sequence）、**managed tab 元数据**、**tab 相关 RPC 审计**；`audit_list` / `bb-browser audit` 查询。 |
+| **`internal/state`** | **短 tab id 注册表**（`TabRegistry`，关 tab 释放 id、清缓冲）；**按 tab 隔离的观测环形缓冲**（`TabObsStore` + `ringbuf`），满足 INV-1～INV-7 类不变量。 |
 | **`internal/daemon`（观测）** | `obsSink` 把 CDP 事件写入 `TabObsStore`；`syncObservation` 与 `tab_list` 等路径对齐目标列表并清理已关闭 target 的缓冲。 |
 | **`internal/browser`** | chromedp：`Session` 持有远程 allocator 上下文，执行 `goto` / `eval` / `click` / `snapshot` / Fetch 域路由等；**不**负责启动 Chrome。 |
 | **`pkg/protocol`** | JSON-RPC 请求/响应与各 `method` 的 params/result 类型，供 daemon 与 `pkg/daemonclient` 共用。 |
@@ -52,7 +53,8 @@ flowchart LR
   HTTP[HTTP :8787]
   RPC[POST /v1 JSON-RPC]
   SRV[daemon.Server]
-  ST[state: seq, tabs, obs]
+  ST[state: tabs, obs]
+  BG[store: Badger seq audit]
   BR[browser.Session CDP]
   CH[Chrome remote debugging]
 
@@ -60,6 +62,7 @@ flowchart LR
   HTTP --> RPC
   RPC --> SRV
   SRV --> ST
+  SRV --> BG
   SRV --> BR
   BR --> CH
 ```
@@ -71,9 +74,9 @@ flowchart LR
 | `BB_BROWSER_DEBUGGER_URL` | Chrome DevTools 端点（`host:port` 或 ws/http URL），等价 `--debugger-url` |
 | `BB_BROWSER_LISTEN` | daemon 监听地址，默认 `127.0.0.1:8787` |
 | `BB_BROWSER_TAB_IDLE_TIMEOUT` | 自动关闭 daemon 创建的 idle tab 的超时，默认 `5m`；`0` 禁用 |
-| `BB_BROWSER_STATE_DIR` | 持久化 managed-tab 状态目录，默认 `~/.local/state/bb-daemon`；等价 `--state-dir` |
+| `BB_BROWSER_STATE_DIR` | Badger 状态目录，默认 `~/.local/state/bb-daemon`（数据在 `badger/` 子目录）；`-` 为 in-memory；等价 `--state-dir` |
 
-**Idle tab 自动清理**：`tab_new` 创建的 tab 会被 daemon 跟踪；在 `BB_BROWSER_TAB_IDLE_TIMEOUT` 内无操作（`goto`、`eval`、`tab_select` 等）则自动 `tab_close`。用户手动打开的 tab 不受影响。状态写入 `{StateDir}/tabs.json`（按 CDP target id），**daemon 重启后**会恢复 managed 集合并继续计时；重启后有约 30s 的 grace，避免刚启动就批量关 tab。若 state 目录不可写，则退化为仅内存跟踪（重启后丢失）。
+**Idle tab 自动清理**：`tab_new` 创建的 tab 会被 daemon 跟踪；在 `BB_BROWSER_TAB_IDLE_TIMEOUT` 内无操作（`goto`、`eval`、`tab_select` 等）则自动 `tab_close`。用户手动打开的 tab 不受影响。managed tab 元数据写入 Badger（`{StateDir}/badger/`），**daemon 重启后**会恢复 managed 集合并继续计时；重启后有约 30s 的 grace，避免刚启动就批量关 tab。若 state 目录不可写，则退化为 in-memory Badger（重启后丢失）。**RPC 审计**：tab 相关 JSON-RPC 调用异步写入 Badger；`bb-browser audit` 或 `audit_list` 查询。
 
 **Docker Compose 示例**（需挂载 volume 才能跨容器重建保留 state）：
 

@@ -10,8 +10,8 @@ import (
 
 	"github.com/chromedp/cdproto/target"
 	"github.com/yiplee/go-bb-browser/internal/browser"
-	"github.com/yiplee/go-bb-browser/pkg/protocol"
 	"github.com/yiplee/go-bb-browser/internal/state"
+	"github.com/yiplee/go-bb-browser/pkg/protocol"
 )
 
 type fakeConn struct {
@@ -122,11 +122,14 @@ func rpcReq(method string, params any, id any) string {
 }
 
 func TestV1TabListWithoutTabParam(t *testing.T) {
-	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0"}
+	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0", StateDir: stateDirDisabled}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv.tabHook = &fakeConn{infos: []*target.Info{
 		{TargetID: "ABCDEF123456", Type: "page", Title: "t", URL: "https://ex"},
 	}}
@@ -160,11 +163,14 @@ func TestV1TabListWithoutTabParam(t *testing.T) {
 }
 
 func TestV1TabFocus(t *testing.T) {
-	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0"}
+	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0", StateDir: stateDirDisabled}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv.tabHook = &fakeConn{infos: []*target.Info{
 		{TargetID: "ABCDEF123456", Type: "page", Title: "t", URL: "https://ex"},
 	}}
@@ -198,11 +204,14 @@ func TestV1TabFocus(t *testing.T) {
 }
 
 func TestV1TabFocusNoTabs(t *testing.T) {
-	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0"}
+	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0", StateDir: stateDirDisabled}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv.tabHook = &fakeConn{infos: []*target.Info{}}
 
 	body := bytes.NewBufferString(rpcReq(protocol.MethodTabFocus, map[string]any{}, 1))
@@ -224,11 +233,14 @@ func TestV1TabFocusNoTabs(t *testing.T) {
 }
 
 func TestV1TabSelectUnknownTab(t *testing.T) {
-	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0"}
+	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0", StateDir: stateDirDisabled}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv.tabHook = &fakeConn{infos: []*target.Info{
 		{TargetID: "ABCDEF123456", Type: "page"},
 	}}
@@ -256,11 +268,14 @@ func TestV1TabSelectUnknownTab(t *testing.T) {
 }
 
 func TestV1TabNewSilentPreservesFocus(t *testing.T) {
-	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0"}
+	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0", StateDir: stateDirDisabled}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv.tabHook = &fakeConn{infos: []*target.Info{
 		{TargetID: "ABCDEF123456", Type: "page", Title: "first", URL: "https://a"},
 	}, createID: "CAFEBABE0001"}
@@ -325,11 +340,14 @@ func TestV1TabNewSilentPreservesFocus(t *testing.T) {
 }
 
 func TestV1WorkflowTabNewGotoClose(t *testing.T) {
-	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0"}
+	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0", StateDir: stateDirDisabled}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv.tabHook = &fakeConn{
 		infos:    []*target.Info{},
 		createID: "CAFEBABE0001",
@@ -376,11 +394,14 @@ func TestV1WorkflowTabNewGotoClose(t *testing.T) {
 }
 
 func TestV1SeqMonotonicAcrossCalls(t *testing.T) {
-	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0"}
+	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0", StateDir: stateDirDisabled}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv.tabHook = &fakeConn{
 		infos: []*target.Info{
 			{TargetID: "ABCDEF123456", Type: "page"},
@@ -416,11 +437,14 @@ func TestV1SeqMonotonicAcrossCalls(t *testing.T) {
 }
 
 func TestV1UnknownMethod(t *testing.T) {
-	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0"}
+	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0", StateDir: stateDirDisabled}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv.tabHook = &fakeConn{infos: []*target.Info{}}
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1",
@@ -440,11 +464,14 @@ func TestV1UnknownMethod(t *testing.T) {
 }
 
 func TestV1MissingID(t *testing.T) {
-	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0"}
+	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0", StateDir: stateDirDisabled}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1",
 		bytes.NewBufferString(`{"jsonrpc":"2.0","method":"tab_list"}`)))

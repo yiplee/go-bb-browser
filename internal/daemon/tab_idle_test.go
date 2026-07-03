@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/chromedp/cdproto/target"
+	"github.com/yiplee/go-bb-browser/internal/store"
 	"github.com/yiplee/go-bb-browser/pkg/protocol"
 )
 
@@ -30,7 +31,10 @@ func newIdleTestServerWithState(fc *fakeConn, timeout time.Duration, stateDir st
 	if err := cfg.Validate(); err != nil {
 		panic(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		panic(err)
+	}
 	srv.tabHook = fc
 	return srv
 }
@@ -113,6 +117,31 @@ func TestTabIdleDisabled(t *testing.T) {
 	}
 }
 
+func TestTabIdleRepeatedReconcileDoesNotRenew(t *testing.T) {
+	stateDir := t.TempDir()
+	timeout := 60 * time.Millisecond
+	fc := &fakeConn{infos: []*target.Info{}}
+	srv := newIdleTestServerWithState(fc, timeout, stateDir)
+
+	postRPC(t, srv, rpcReq(protocol.MethodTabNew, map[string]any{}, 1))
+	if len(fc.infos) != 1 {
+		t.Fatalf("tab_new: %#v", fc.infos)
+	}
+
+	// Simulate repeated target syncs (e.g. tab_list polling) while the tab sits
+	// idle. Reconciliation must not reset the already-tracked idle timer.
+	deadline := time.Now().Add(timeout + 40*time.Millisecond)
+	for time.Now().Before(deadline) {
+		srv.reconcileIdleFromDisk(srv.syncTabsFromTargets(fc.infos))
+		time.Sleep(15 * time.Millisecond)
+	}
+
+	srv.closeExpiredTabs(context.Background())
+	if len(fc.infos) != 0 {
+		t.Fatalf("idle tab kept alive by repeated reconcile: %#v", fc.infos)
+	}
+}
+
 func TestConfigValidateTabIdleTimeoutNegative(t *testing.T) {
 	cfg := Config{
 		DebuggerURL:    "127.0.0.1:9222",
@@ -139,9 +168,12 @@ func TestTabIdleRestartRestoresManagedTab(t *testing.T) {
 	if len(fcA.infos) != 1 {
 		t.Fatalf("tab_new: %#v", fcA.infos)
 	}
-	statePath := filepath.Join(stateDir, tabStateFileName)
-	if _, err := os.Stat(statePath); err != nil {
-		t.Fatalf("expected state file: %v", err)
+	badgerPath := filepath.Join(stateDir, "badger")
+	if _, err := os.Stat(badgerPath); err != nil {
+		t.Fatalf("expected badger dir: %v", err)
+	}
+	if err := srvA.store.Close(); err != nil {
+		t.Fatal(err)
 	}
 
 	fcB := &fakeConn{infos: []*target.Info{
@@ -168,10 +200,21 @@ func TestTabIdleRestartGraceDelaysClose(t *testing.T) {
 	timeout := 80 * time.Millisecond
 	grace := 40 * time.Millisecond
 	tabID := target.ID("ABCDEF999999")
-
-	store := newTabStateStore(stateDir)
 	expiredAt := time.Now().Add(-timeout - time.Millisecond)
-	if err := store.Save(map[target.ID]time.Time{tabID: expiredAt}); err != nil {
+
+	st, err := store.Open(store.OpenConfig{StateDir: stateDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PutTab(store.TabRecord{
+		TargetID:       string(tabID),
+		ShortID:        "9999",
+		OpenedAt:       expiredAt,
+		LastActivityAt: expiredAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -188,7 +231,10 @@ func TestTabIdleRestartGraceDelaysClose(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv.tabHook = fc
 	snaps := srv.syncTabsFromTargets(fc.infos)
 	srv.reconcileIdleFromDisk(snaps)
@@ -205,7 +251,7 @@ func TestTabIdleRestartGraceDelaysClose(t *testing.T) {
 	}
 }
 
-func TestTabStateStoreUnwritableDirDisablesPersistence(t *testing.T) {
+func TestUnwritableStateDirUsesInMemoryBadger(t *testing.T) {
 	readOnlyDir := t.TempDir()
 	if err := os.Chmod(readOnlyDir, 0o555); err != nil {
 		t.Skip("cannot chmod read-only:", err)
@@ -222,11 +268,38 @@ func TestTabStateStoreUnwritableDirDisablesPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv := NewServer(cfg, nil)
-	if srv.tabState != nil {
-		t.Fatal("expected persistence disabled for unwritable state dir")
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if srv.store == nil {
+		t.Fatal("expected store")
+	}
+	if !srv.store.InMemory() {
+		t.Fatal("expected in-memory badger for unwritable state dir")
 	}
 	fc := &fakeConn{infos: []*target.Info{}}
 	srv.tabHook = fc
 	postRPC(t, srv, rpcReq(protocol.MethodTabNew, map[string]any{}, 1))
+}
+
+func TestSyncTabIdlePresenceKeepsBadger(t *testing.T) {
+	stateDir := t.TempDir()
+	fc := &fakeConn{infos: []*target.Info{}}
+	srv := newIdleTestServerWithState(fc, time.Minute, stateDir)
+	postRPC(t, srv, rpcReq(protocol.MethodTabNew, map[string]any{}, 1))
+	if len(fc.infos) != 1 {
+		t.Fatal("expected tab")
+	}
+	tid := fc.infos[0].TargetID
+
+	srv.syncTabIdlePresence(nil)
+
+	tabs, err := srv.store.ListTabs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tabs) != 1 || tabs[0].TargetID != string(tid) {
+		t.Fatalf("badger cleared by presence sync: %#v", tabs)
+	}
 }

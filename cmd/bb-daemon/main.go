@@ -61,7 +61,11 @@ func run() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	srv := daemon.NewServer(cfg, log)
+	srv, err := daemon.NewServer(cfg, log)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config: %v\n", err)
+		return 2
+	}
 	if err := srv.ListenAndServe(ctx); err != nil {
 		log.Error("daemon exited", "err", err)
 		return 1

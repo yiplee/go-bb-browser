@@ -8,12 +8,14 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/chromedp/cdproto/target"
 	"github.com/yiplee/go-bb-browser/internal/browser"
 	"github.com/yiplee/go-bb-browser/internal/state"
+	"github.com/yiplee/go-bb-browser/internal/store"
 )
 
 // Server is the HTTP API front-end for the daemon (JSON-RPC over POST /v1).
@@ -22,7 +24,7 @@ type Server struct {
 	logger *slog.Logger
 	mux    *http.ServeMux
 
-	seq      state.SeqGen
+	store    *store.Store
 	tabs     *state.TabRegistry
 	tabMu    sync.RWMutex
 	tabLive  tabConn // set after CDP connect in ListenAndServe
@@ -35,33 +37,43 @@ type Server struct {
 	obsStore *state.TabObsStore
 	obsSink  *obsSink
 	tabIdle  *state.TabIdleTracker
-	tabState *tabStateStore
 
 	tabMuOps    sync.Mutex
 	tabCDPLocks map[string]*sync.Mutex // per short tab id
+
+	// auditWG tracks in-flight async audit writes so they are drained before the store closes.
+	auditWG sync.WaitGroup
 
 	// SkipBrowserAttach skips CDP connect in ListenAndServe (tests without Chrome).
 	SkipBrowserAttach bool
 }
 
 // NewServer builds a daemon HTTP server with the given config (must pass Validate).
-func NewServer(cfg Config, logger *slog.Logger) *Server {
+func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	obsStore := state.NewTabObsStore()
 	s := &Server{
-		cfg:       cfg,
-		logger:    logger,
-		mux:       http.NewServeMux(),
-		tabs:      state.NewTabRegistry(),
-		obsStore:  obsStore,
+		cfg:      cfg,
+		logger:   logger,
+		mux:      http.NewServeMux(),
+		tabs:     state.NewTabRegistry(),
+		obsStore: obsStore,
 		tabIdle:  state.NewTabIdleTracker(),
 	}
-	s.tabState = initTabStateStore(effectiveStateDir(cfg), logger)
-	s.obsSink = &obsSink{seq: &s.seq, store: obsStore}
+	stateDir := effectiveStateDir(cfg)
+	if strings.TrimSpace(cfg.StateDir) == stateDirDisabled {
+		stateDir = stateDirDisabled
+	}
+	st, err := store.Open(store.OpenConfig{StateDir: stateDir, Logger: logger})
+	if err != nil {
+		return nil, fmt.Errorf("badger store: %w", err)
+	}
+	s.store = st
+	s.obsSink = &obsSink{store: st, obs: obsStore, logger: logger}
 	s.routes()
-	return s
+	return s, nil
 }
 
 // syncObservation aligns CDP tab observers and clears buffers for removed targets (Phase 3).
@@ -117,6 +129,13 @@ func (s *Server) handleHealthGet(w http.ResponseWriter, _ *http.Request) {
 
 // ListenAndServe starts the HTTP server until ctx is cancelled or Listen fails.
 func (s *Server) ListenAndServe(ctx context.Context) error {
+	defer func() {
+		if s.store != nil {
+			s.auditWG.Wait() // drain async audit writes before closing the store
+			_ = s.store.Close()
+		}
+	}()
+
 	if !s.SkipBrowserAttach && s.tabHook == nil {
 		s.tabMu.Lock()
 		if err := s.connectBrowserLocked(ctx); err != nil {

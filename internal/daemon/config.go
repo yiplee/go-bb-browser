@@ -27,7 +27,7 @@ type Config struct {
 	// TabIdleTimeout closes daemon-created tabs after this idle period; 0 disables cleanup.
 	TabIdleTimeout time.Duration
 
-	// StateDir holds persisted managed-tab idle state (tabs.json). Empty disables persistence.
+	// StateDir holds daemon Badger state (managed tabs, RPC audit, global seq). "-" uses in-memory Badger.
 	StateDir string
 
 	// IdleStartupGrace prevents immediate mass-close of restored tabs after daemon restart.
@@ -35,11 +35,11 @@ type Config struct {
 }
 
 const (
-	DefaultListenAddr         = "127.0.0.1:8787"
-	DefaultMaxBodyBytes       = 1 << 20 // 1 MiB
-	DefaultTabIdleTimeout     = 5 * time.Minute
-	DefaultIdleStartupGrace   = 30 * time.Second
-	defaultStateDirRel        = ".local/state/bb-daemon"
+	DefaultListenAddr       = "127.0.0.1:8787"
+	DefaultMaxBodyBytes     = 1 << 20 // 1 MiB
+	DefaultTabIdleTimeout   = 5 * time.Minute
+	DefaultIdleStartupGrace = 30 * time.Second
+	defaultStateDirRel      = ".local/state/bb-daemon"
 )
 
 // Validate checks required fields and normalizes DebuggerURL whitespace.

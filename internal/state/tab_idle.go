@@ -39,6 +39,21 @@ func (t *TabIdleTracker) MarkManagedAt(id target.ID, at time.Time) {
 	t.managed[id] = at
 }
 
+// MarkManagedIfAbsentAt registers a tab only if it is not already tracked, so
+// repeated disk reconciliation never overwrites (and never re-clamps) the
+// last-activity time of a tab that is already being tracked in memory.
+func (t *TabIdleTracker) MarkManagedIfAbsentAt(id target.ID, at time.Time) {
+	if t == nil || id == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if _, ok := t.managed[id]; ok {
+		return
+	}
+	t.managed[id] = at
+}
+
 // Touch updates last activity for a managed tab.
 func (t *TabIdleTracker) Touch(id target.ID) {
 	if t == nil || id == "" {
@@ -63,16 +78,24 @@ func (t *TabIdleTracker) Forget(id target.ID) {
 
 // SyncPresent removes managed entries whose target id is no longer present in the browser.
 func (t *TabIdleTracker) SyncPresent(present map[target.ID]struct{}) {
+	t.SyncPresentReturnRemoved(present)
+}
+
+// SyncPresentReturnRemoved removes absent tabs and returns the removed target ids.
+func (t *TabIdleTracker) SyncPresentReturnRemoved(present map[target.ID]struct{}) []target.ID {
 	if t == nil {
-		return
+		return nil
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	var removed []target.ID
 	for id := range t.managed {
 		if _, ok := present[id]; !ok {
+			removed = append(removed, id)
 			delete(t.managed, id)
 		}
 	}
+	return removed
 }
 
 // Snapshot returns a copy of managed target ids and their last-activity times.

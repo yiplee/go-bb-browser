@@ -12,17 +12,28 @@ import (
 )
 
 func TestV1NetworkSinceAndCursor(t *testing.T) {
-	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0"}
+	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0", StateDir: stateDirDisabled}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv.tabHook = &fakeConn{infos: []*target.Info{
 		{TargetID: "ABCDEF123456", Type: "page"},
 	}}
 	tid := target.ID("ABCDEF123456")
-	srv.obsStore.PushNetwork(tid, srv.seq.Next(), json.RawMessage(`{"k":1}`))
-	srv.obsStore.PushNetwork(tid, srv.seq.Next(), json.RawMessage(`{"k":2}`))
+	seq1, err := srv.store.NextSeq()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seq2, err := srv.store.NextSeq()
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.obsStore.PushNetwork(tid, seq1, json.RawMessage(`{"k":1}`))
+	srv.obsStore.PushNetwork(tid, seq2, json.RawMessage(`{"k":2}`))
 
 	body := bytes.NewBufferString(rpcReq(protocol.MethodNetwork, map[string]any{
 		"tab":   "3456",

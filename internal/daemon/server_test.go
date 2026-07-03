@@ -14,11 +14,15 @@ func TestHealthGet(t *testing.T) {
 	cfg := Config{
 		DebuggerURL: "127.0.0.1:9222",
 		ListenAddr:  "127.0.0.1:0",
+		StateDir:    stateDirDisabled,
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
@@ -43,11 +47,15 @@ func TestHealthPostMethodNotAllowed(t *testing.T) {
 	cfg := Config{
 		DebuggerURL: "127.0.0.1:9222",
 		ListenAddr:  "127.0.0.1:0",
+		StateDir:    stateDirDisabled,
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
@@ -79,11 +87,15 @@ func TestListenAndServeShutdown(t *testing.T) {
 	cfg := Config{
 		DebuggerURL: "127.0.0.1:9222",
 		ListenAddr:  addr,
+		StateDir:    stateDirDisabled,
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(cfg, nil)
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv.SkipBrowserAttach = true
 
 	ctx, cancel := context.WithCancel(context.Background())

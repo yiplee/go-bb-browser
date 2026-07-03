@@ -1,6 +1,9 @@
 package protocol
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // JSON-RPC 2.0 method names (same string values as legacy "action" field).
 const (
@@ -25,7 +28,39 @@ const (
 	MethodConsoleClear   = "console_clear"
 	MethodErrors         = "errors"
 	MethodErrorsClear    = "errors_clear"
+	MethodAuditList      = "audit_list"
 )
+
+// tabRelatedMethods lists JSON-RPC methods that operate on browser tabs (for audit logging).
+var tabRelatedMethods = map[string]struct{}{
+	MethodTabList:        {},
+	MethodTabFocus:       {},
+	MethodTabSelect:      {},
+	MethodTabNew:         {},
+	MethodGoto:           {},
+	MethodReload:         {},
+	MethodTabClose:       {},
+	MethodScreenshot:     {},
+	MethodEval:           {},
+	MethodClick:          {},
+	MethodFill:           {},
+	MethodNetwork:        {},
+	MethodNetworkClear:   {},
+	MethodNetworkRoute:   {},
+	MethodNetworkUnroute: {},
+	MethodFetch:          {},
+	MethodSnapshot:       {},
+	MethodConsole:        {},
+	MethodConsoleClear:   {},
+	MethodErrors:         {},
+	MethodErrorsClear:    {},
+}
+
+// IsTabRelatedMethod reports whether method should be persisted in the RPC audit log.
+func IsTabRelatedMethod(method string) bool {
+	_, ok := tabRelatedMethods[method]
+	return ok
+}
 
 // Legacy aliases — same values as Method*.
 const (
@@ -301,6 +336,31 @@ type ConsoleClearResult struct {
 type ErrorsClearResult struct {
 	Tab string `json:"tab"`
 	Seq uint64 `json:"seq"`
+}
+
+// AuditListParams queries persisted RPC audit records.
+type AuditListParams struct {
+	Since uint64 `json:"since,omitempty"`
+	Limit int    `json:"limit,omitempty"`
+}
+
+// AuditRecord is one persisted RPC call summary in the audit log.
+type AuditRecord struct {
+	ID       uint64    `json:"id"`
+	Action   string    `json:"action"`
+	Tab      string    `json:"tab,omitempty"`
+	SenderIP string    `json:"sender_ip"`
+	Seq      uint64    `json:"seq,omitempty"`
+	OK       bool      `json:"ok"`
+	Error    string    `json:"error,omitempty"`
+	Time     time.Time `json:"time"`
+}
+
+// AuditListResult is the payload for audit_list (INV-1, INV-2 style cursor).
+type AuditListResult struct {
+	Seq     uint64        `json:"seq"`
+	Cursor  uint64        `json:"cursor"`
+	Records []AuditRecord `json:"records"`
 }
 
 // ObsEvent is one buffered observation (seq-tagged, INV-4).

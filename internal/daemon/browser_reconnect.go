@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/yiplee/go-bb-browser/internal/browser"
+	"github.com/yiplee/go-bb-browser/internal/state"
 )
 
 const browserHealthProbeMinInterval = 2 * time.Second
@@ -45,15 +46,18 @@ func (s *Server) connectBrowserLocked(ctx context.Context) error {
 	s.tabLive = sess
 	s.sessDone = sess.Close
 	targets, terr := sess.PageTargets()
+	var snaps []state.TabSnapshot
 	if terr != nil {
 		if s.logger != nil {
 			s.logger.Warn("list targets after browser connect", "err", terr)
 		}
-		targets = nil
+	} else {
+		snaps = s.syncTabsFromTargets(targets)
+		s.syncObservation(sess, targets)
 	}
-	snaps := s.syncTabsFromTargets(targets)
+	// Restore managed-tab idle state from disk exactly once, at startup, so
+	// long-idle daemon-created tabs are still cleaned up after a restart.
 	s.reconcileIdleFromDisk(snaps)
-	s.syncObservation(sess, targets)
 	s.lastBrowserOK = time.Now()
 	if s.logger != nil {
 		s.logger.Info("browser CDP session connected", "debugger", s.cfg.DebuggerURL)
