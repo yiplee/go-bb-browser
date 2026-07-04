@@ -41,7 +41,7 @@ go test ./...
 |------|------|
 | **`cmd/bb-daemon`** | 解析 `--debugger-url` / `--listen`（及对应环境变量），构造 `daemon.Config`，启动 `daemon.Server`。 |
 | **`internal/daemon`** | `http.ServeMux`：`GET /health` 返回 JSON `{"status":"ok"}`；`POST /v1` 解析 [JSON-RPC 2.0](https://www.jsonrpc.org/specification)，按 `method` 分发到各 handler。维护与 Chrome 的 **单一 CDP 会话**（启动时 `connectBrowserLocked`），失败时可重连（`ensureBrowserSession`）。 |
-| **`internal/store`** | **RPC log**（`{StateDir}/rpc.jsonl`，append-only）+ **checkpoint**（`rpc-checkpoint.json`，idle 快速恢复）；**全局单调 `seq`**。 |
+| **`internal/store`** | **RPC log**（`{StateDir}/rpc.jsonl`，append-only）；**全局单调 `seq`**（启动时以纳秒时钟为起始值，内存自增）。 |
 | **`internal/state`** | **短 tab id 注册表**（`TabRegistry`，关 tab 释放 id、清缓冲）；**按 tab 隔离的观测环形缓冲**（`TabObsStore` + `ringbuf`），满足 INV-1～INV-7 类不变量。 |
 | **`internal/daemon`（观测）** | `obsSink` 把 CDP 事件写入 `TabObsStore`；`syncObservation` 与 `tab_list` 等路径对齐目标列表并清理已关闭 target 的缓冲。 |
 | **`internal/browser`** | chromedp：`Session` 持有远程 allocator 上下文，执行 `goto` / `eval` / `click` / `snapshot` / Fetch 域路由等；**不**负责启动 Chrome。 |
@@ -75,8 +75,9 @@ flowchart LR
 | `BB_BROWSER_LISTEN` | daemon 监听地址，默认 `127.0.0.1:8787` |
 | `BB_BROWSER_TAB_IDLE_TIMEOUT` | 自动关闭 daemon 创建的 idle tab 的超时，默认 `5m`；`0` 禁用 |
 | `BB_BROWSER_STATE_DIR` | RPC log 目录，默认 `~/.local/state/bb-daemon`（`rpc.jsonl`）；`-` 为 in-memory；等价 `--state-dir` |
+| `BB_BROWSER_RPC_LOG_MAX_BYTES` | `rpc.jsonl` 超过该字节数即轮转，默认 `8388608`（8 MiB）；等价 `--rpc-log-max-bytes` |
 
-**Idle tab 自动清理**：`tab_new` 创建的 tab 会被 daemon 跟踪；在 `BB_BROWSER_TAB_IDLE_TIMEOUT` 内无操作则自动 `tab_close`。tab 相关 JSON-RPC 的 **`method` + 原始 request body** 写入 `rpc.jsonl`；idle 状态维护在内存，并同步写入 `rpc-checkpoint.json`（含 log 偏移与 managed tab 时间戳），**daemon 重启**时只回放 checkpoint 之后的 log 尾部，避免全量扫描大文件。重启后有约 30s grace。
+**Idle tab 自动清理**：`tab_new` 创建的 tab 会被 daemon 跟踪；在 `BB_BROWSER_TAB_IDLE_TIMEOUT` 内无操作则自动 `tab_close`。tab 相关 JSON-RPC 的 **`method` + 原始 request body** 写入 `rpc.jsonl`；idle 状态维护在内存。**daemon 重启**时先通过 CDP 获取当前存在的 tab，再回放 `rpc.jsonl` 求出这些 tab 的最后活跃时间来恢复 idle 跟踪（短 tab id 由 CDP target id 确定性派生，跨重启稳定）。重启后有约 30s grace。全局 `seq` 以启动时的纳秒时钟为起始值内存自增，无需持久化即可跨重启保持递增。`rpc.jsonl` 超过约 8 MiB 会自动轮转：旧文件保存为 `rpc.jsonl.1`…（保留 3 份），新文件开头会写入当前存活 managed tab 的快照（合成 `tab_new` + 最后活跃时间），因此恢复只需读当前文件即可保持完整。
 
 **Docker Compose 示例**（需挂载 volume 才能跨容器重建保留 state）：
 

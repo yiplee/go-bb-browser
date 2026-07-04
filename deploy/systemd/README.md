@@ -65,8 +65,9 @@ sudo loginctl enable-linger "$USER"
   Environment=BB_BROWSER_STATE_DIR=%h/.local/state/bb-daemon
   ```
 
-  Tab-related RPC log lines and `rpc-checkpoint.json` (idle state + log offset) live under `{StateDir}`
-  so idle cleanup continues after daemon restarts without scanning the full log. The unit's `ReadWritePaths=` already
+  Tab-related RPC log lines live in `rpc.jsonl` under `{StateDir}`, so idle cleanup can be rebuilt after daemon
+  restarts by intersecting live CDP tabs with the log's per-tab activity. The log auto-rotates past ~8 MiB into
+  `rpc.jsonl.1`… backups (3 kept). The unit's `ReadWritePaths=` already
   allows `%h/.local/state/bb-daemon`; you may also set `StateDirectory=bb-daemon`
   under `[Service]` for systemd-managed state layout.
 
