@@ -50,6 +50,11 @@ func postRPC(t *testing.T, srv *Server, body string) *httptest.ResponseRecorder 
 	return rec
 }
 
+func drainRPCLog(t *testing.T, srv *Server) {
+	t.Helper()
+	srv.auditWG.Wait()
+}
+
 func TestTabIdlePreExistingTabNotClosed(t *testing.T) {
 	fc := &fakeConn{infos: []*target.Info{
 		{TargetID: "ABCDEF123456", Type: "page", Title: "t", URL: "https://ex"},
@@ -132,7 +137,7 @@ func TestTabIdleRepeatedReconcileDoesNotRenew(t *testing.T) {
 	// idle. Reconciliation must not reset the already-tracked idle timer.
 	deadline := time.Now().Add(timeout + 40*time.Millisecond)
 	for time.Now().Before(deadline) {
-		srv.reconcileIdleFromDisk(srv.syncTabsFromTargets(fc.infos))
+		srv.reconcileIdleFromLog(srv.syncTabsFromTargets(fc.infos))
 		time.Sleep(15 * time.Millisecond)
 	}
 
@@ -168,9 +173,13 @@ func TestTabIdleRestartRestoresManagedTab(t *testing.T) {
 	if len(fcA.infos) != 1 {
 		t.Fatalf("tab_new: %#v", fcA.infos)
 	}
-	badgerPath := filepath.Join(stateDir, "badger")
-	if _, err := os.Stat(badgerPath); err != nil {
-		t.Fatalf("expected badger dir: %v", err)
+	drainRPCLog(t, srvA)
+	logPath := filepath.Join(stateDir, store.RPCLogFile())
+	if _, err := os.Stat(logPath); err != nil {
+		t.Fatalf("expected rpc.jsonl: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, store.RPCCheckpointFile())); err != nil {
+		t.Fatalf("expected rpc-checkpoint.json: %v", err)
 	}
 	if err := srvA.store.Close(); err != nil {
 		t.Fatal(err)
@@ -186,7 +195,7 @@ func TestTabIdleRestartRestoresManagedTab(t *testing.T) {
 	}}
 	srvB := newIdleTestServerWithState(fcB, timeout, stateDir)
 	snaps := srvB.syncTabsFromTargets(fcB.infos)
-	srvB.reconcileIdleFromDisk(snaps)
+	srvB.reconcileIdleFromLog(snaps)
 
 	time.Sleep(60 * time.Millisecond)
 	srvB.closeExpiredTabs(context.Background())
@@ -202,19 +211,41 @@ func TestTabIdleRestartGraceDelaysClose(t *testing.T) {
 	tabID := target.ID("ABCDEF999999")
 	expiredAt := time.Now().Add(-timeout - time.Millisecond)
 
-	st, err := store.Open(store.OpenConfig{StateDir: stateDir})
+	logPath := filepath.Join(stateDir, store.RPCLogFile())
+	checkpointPath := filepath.Join(stateDir, store.RPCCheckpointFile())
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	line, err := json.Marshal(store.LogRecord{
+		Action: protocol.MethodTabNew,
+		Body:   json.RawMessage(`{"jsonrpc":"2.0","method":"tab_new","params":{},"id":1}`),
+		Tab:    "9999",
+		OK:     true,
+		Time:   expiredAt,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.PutTab(store.TabRecord{
-		TargetID:       string(tabID),
-		ShortID:        "9999",
-		OpenedAt:       expiredAt,
-		LastActivityAt: expiredAt,
-	}); err != nil {
+	logData := append(line, '\n')
+	if err := os.WriteFile(logPath, logData, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Close(); err != nil {
+	cp := struct {
+		LogOffset int64                        `json:"log_offset"`
+		MaxSeq    uint64                       `json:"max_seq"`
+		Managed   map[string]time.Time         `json:"managed"`
+	}{
+		LogOffset: int64(len(logData)),
+		MaxSeq:    1,
+		Managed: map[string]time.Time{
+			"9999": expiredAt,
+		},
+	}
+	cpBytes, err := json.Marshal(cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(checkpointPath, cpBytes, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -225,8 +256,8 @@ func TestTabIdleRestartGraceDelaysClose(t *testing.T) {
 		DebuggerURL:      "127.0.0.1:9222",
 		ListenAddr:       "127.0.0.1:0",
 		TabIdleTimeout:   timeout,
-		StateDir:         stateDir,
 		IdleStartupGrace: grace,
+		StateDir:         stateDir,
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
@@ -237,7 +268,7 @@ func TestTabIdleRestartGraceDelaysClose(t *testing.T) {
 	}
 	srv.tabHook = fc
 	snaps := srv.syncTabsFromTargets(fc.infos)
-	srv.reconcileIdleFromDisk(snaps)
+	srv.reconcileIdleFromLog(snaps)
 
 	srv.closeExpiredTabs(context.Background())
 	if len(fc.infos) != 1 {
@@ -251,7 +282,7 @@ func TestTabIdleRestartGraceDelaysClose(t *testing.T) {
 	}
 }
 
-func TestUnwritableStateDirUsesInMemoryBadger(t *testing.T) {
+func TestUnwritableStateDirUsesInMemoryStore(t *testing.T) {
 	readOnlyDir := t.TempDir()
 	if err := os.Chmod(readOnlyDir, 0o555); err != nil {
 		t.Skip("cannot chmod read-only:", err)
@@ -276,14 +307,14 @@ func TestUnwritableStateDirUsesInMemoryBadger(t *testing.T) {
 		t.Fatal("expected store")
 	}
 	if !srv.store.InMemory() {
-		t.Fatal("expected in-memory badger for unwritable state dir")
+		t.Fatal("expected in-memory store for unwritable state dir")
 	}
 	fc := &fakeConn{infos: []*target.Info{}}
 	srv.tabHook = fc
 	postRPC(t, srv, rpcReq(protocol.MethodTabNew, map[string]any{}, 1))
 }
 
-func TestSyncTabIdlePresenceKeepsBadger(t *testing.T) {
+func TestSyncTabIdlePresenceKeepsLog(t *testing.T) {
 	stateDir := t.TempDir()
 	fc := &fakeConn{infos: []*target.Info{}}
 	srv := newIdleTestServerWithState(fc, time.Minute, stateDir)
@@ -291,15 +322,16 @@ func TestSyncTabIdlePresenceKeepsBadger(t *testing.T) {
 	if len(fc.infos) != 1 {
 		t.Fatal("expected tab")
 	}
-	tid := fc.infos[0].TargetID
+	drainRPCLog(t, srv)
 
 	srv.syncTabIdlePresence(nil)
 
-	tabs, err := srv.store.ListTabs()
+	logPath := filepath.Join(stateDir, store.RPCLogFile())
+	data, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tabs) != 1 || tabs[0].TargetID != string(tid) {
-		t.Fatalf("badger cleared by presence sync: %#v", tabs)
+	if len(data) == 0 {
+		t.Fatal("rpc log cleared by presence sync")
 	}
 }

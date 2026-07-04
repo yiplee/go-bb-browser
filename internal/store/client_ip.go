@@ -3,6 +3,7 @@ package store
 import (
 	"net"
 	"net/http"
+	"strings"
 )
 
 // ClientIP extracts the client IP from an HTTP request using RemoteAddr only.
@@ -11,9 +12,9 @@ func ClientIP(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
 	if err != nil {
-		return r.RemoteAddr
+		return strings.TrimSpace(r.RemoteAddr)
 	}
 	return host
 }

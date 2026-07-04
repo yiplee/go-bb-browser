@@ -55,9 +55,9 @@ func (s *Server) connectBrowserLocked(ctx context.Context) error {
 		snaps = s.syncTabsFromTargets(targets)
 		s.syncObservation(sess, targets)
 	}
-	// Restore managed-tab idle state from disk exactly once, at startup, so
+	// Restore managed-tab idle state from the RPC log exactly once, at startup, so
 	// long-idle daemon-created tabs are still cleaned up after a restart.
-	s.reconcileIdleFromDisk(snaps)
+	s.reconcileIdleFromLog(snaps)
 	s.lastBrowserOK = time.Now()
 	if s.logger != nil {
 		s.logger.Info("browser CDP session connected", "debugger", s.cfg.DebuggerURL)

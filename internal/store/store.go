@@ -1,67 +1,58 @@
 package store
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
-
-	"github.com/dgraph-io/badger/v4"
 )
 
-const (
-	seqKey      = "meta/seq"
-	auditSeqKey = "meta/audit_id"
-	// seqBandwidth leases ids in blocks; unused ids in the last block are lost on
-	// restart, so seq/audit ids may jump forward (INV-4 monotonic, gaps allowed).
-	seqBandwidth = uint64(100)
+const rpcLogFile = "rpc.jsonl"
 
-	auditKeyPrefix = "audit/"
-	tabKeyPrefix   = "tab/"
-)
+// RPCLogFile returns the on-disk RPC log filename under StateDir.
+func RPCLogFile() string { return rpcLogFile }
 
-// OpenConfig selects disk or in-memory Badger storage.
+// OpenConfig selects disk or in-memory RPC log storage.
 type OpenConfig struct {
 	// StateDir is the daemon state directory. "-" forces in-memory mode.
 	StateDir string
 	Logger   *slog.Logger
 }
 
-// Store is a Badger-backed persistence layer for global seq, RPC audit, and managed tabs.
+// Store persists tab-related RPC lines, idle checkpoint, and allocates global seq (INV-4).
 type Store struct {
-	db        *badger.DB
-	globalSeq *badger.Sequence
-	auditSeq  *badger.Sequence
-	logger    *slog.Logger
-	inMemory  bool
+	mu             sync.Mutex
+	logFile        *os.File
+	logPath        string
+	checkpointPath string
+	seq            atomic.Uint64
+	managed        map[string]time.Time
+	memLogs        []LogRecord
+	logger         *slog.Logger
+	inMemory       bool
 }
 
-// AuditRecord is a compact summary of one persisted RPC call.
-type AuditRecord struct {
-	ID       uint64    `json:"id"`
-	Action   string    `json:"action"`
-	Tab      string    `json:"tab,omitempty"`
-	SenderIP string    `json:"sender_ip"`
-	Seq      uint64    `json:"seq,omitempty"`
-	OK       bool      `json:"ok"`
-	Error    string    `json:"error,omitempty"`
-	Time     time.Time `json:"time"`
+// LogRecord is one append-only RPC log line.
+type LogRecord struct {
+	Action   string          `json:"action"`
+	Body     json.RawMessage `json:"body"`
+	Tab      string          `json:"tab,omitempty"`
+	SenderIP string          `json:"sender_ip"`
+	Seq      uint64          `json:"seq,omitempty"`
+	OK       bool            `json:"ok"`
+	Error    string          `json:"error,omitempty"`
+	Time     time.Time       `json:"time"`
 }
 
-// TabRecord is persisted metadata for a daemon-created tab.
-type TabRecord struct {
-	TargetID       string    `json:"target_id"`
-	ShortID        string    `json:"short_id"`
-	OpenURL        string    `json:"open_url"`
-	OpenedAt       time.Time `json:"opened_at"`
-	LastActivityAt time.Time `json:"last_activity_at"`
-	Silent         bool      `json:"silent,omitempty"`
-}
-
-// Open initializes Badger on disk or in-memory per cfg.StateDir.
+// Open initializes rpc.jsonl and rpc-checkpoint.json on disk, or in-memory per cfg.StateDir.
 func Open(cfg OpenConfig) (*Store, error) {
 	logger := cfg.Logger
 	if logger == nil {
@@ -71,49 +62,77 @@ func Open(cfg OpenConfig) (*Store, error) {
 	dir := strings.TrimSpace(cfg.StateDir)
 	useMemory := dir == "" || dir == "-"
 
-	var opts badger.Options
+	s := &Store{
+		logger:   logger,
+		inMemory: useMemory,
+		managed:  make(map[string]time.Time),
+	}
+
 	if useMemory {
-		opts = badger.DefaultOptions("").WithInMemory(true)
-	} else {
-		dir = filepath.Clean(dir)
-		badgerDir := filepath.Join(dir, "badger")
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			logger.Warn("badger falling back to in-memory", "dir", dir, "err", err)
-			opts = badger.DefaultOptions("").WithInMemory(true)
-			useMemory = true
-		} else if !dirWritable(dir) {
-			logger.Warn("badger falling back to in-memory", "dir", dir, "err", "directory not writable")
-			opts = badger.DefaultOptions("").WithInMemory(true)
-			useMemory = true
-		} else {
-			opts = badger.DefaultOptions(badgerDir)
+		return s, nil
+	}
+
+	dir = filepath.Clean(dir)
+	logPath := filepath.Join(dir, rpcLogFile)
+	checkpointPath := filepath.Join(dir, rpcCheckpointFile)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		logger.Warn("rpc log falling back to in-memory", "dir", dir, "err", err)
+		s.inMemory = true
+		return s, nil
+	}
+	if !dirWritable(dir) {
+		logger.Warn("rpc log falling back to in-memory", "dir", dir, "err", "directory not writable")
+		s.inMemory = true
+		return s, nil
+	}
+
+	cp, cpErr := loadCheckpoint(checkpointPath)
+	checkpointExists := cpErr == nil
+	if cpErr != nil && !os.IsNotExist(cpErr) {
+		logger.Warn("rpc checkpoint unreadable, scanning full log", "err", cpErr)
+		cp = rpcCheckpoint{}
+		checkpointExists = false
+	}
+
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		logger.Warn("rpc log falling back to in-memory", "path", logPath, "err", err)
+		s.inMemory = true
+		return s, nil
+	}
+
+	managed := cloneManaged(cp.Managed)
+	maxSeq := cp.MaxSeq
+	scanFrom := cp.LogOffset
+	if !checkpointExists {
+		scanFrom = 0
+	}
+	if err := scanLogTail(f, scanFrom, func(rec LogRecord) error {
+		applyManagedFromLogLine(managed, rec)
+		return nil
+	}); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("scan rpc log tail: %w", err)
+	}
+
+	s.logFile = f
+	s.logPath = logPath
+	s.checkpointPath = checkpointPath
+	s.managed = managed
+	if maxSeq > 0 {
+		s.seq.Store(maxSeq)
+	}
+
+	if offset, err := f.Seek(0, io.SeekEnd); err == nil && offset > 0 && (!checkpointExists || cp.LogOffset == 0) {
+		if err := saveCheckpoint(checkpointPath, rpcCheckpoint{
+			LogOffset: offset,
+			MaxSeq:    s.seq.Load(),
+			Managed:   cloneManaged(managed),
+		}); err != nil && logger != nil {
+			logger.Warn("write initial rpc checkpoint failed", "err", err)
 		}
 	}
-
-	db, err := badger.Open(opts)
-	if err != nil {
-		return nil, fmt.Errorf("badger open: %w", err)
-	}
-
-	globalSeq, err := db.GetSequence([]byte(seqKey), seqBandwidth)
-	if err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("badger global seq: %w", err)
-	}
-	auditSeq, err := db.GetSequence([]byte(auditSeqKey), seqBandwidth)
-	if err != nil {
-		_ = globalSeq.Release()
-		_ = db.Close()
-		return nil, fmt.Errorf("badger audit seq: %w", err)
-	}
-
-	return &Store{
-		db:        db,
-		globalSeq: globalSeq,
-		auditSeq:  auditSeq,
-		logger:    logger,
-		inMemory:  useMemory,
-	}, nil
+	return s, nil
 }
 
 func dirWritable(dir string) bool {
@@ -125,7 +144,37 @@ func dirWritable(dir string) bool {
 	return true
 }
 
-// InMemory reports whether the store uses Badger in-memory mode.
+func scanLogTail(f *os.File, offset int64, fn func(LogRecord) error) error {
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return err
+	}
+	defer func() { _, _ = f.Seek(0, io.SeekEnd) }()
+
+	rd := bufio.NewReader(f)
+	for {
+		line, err := rd.ReadBytes('\n')
+		if len(line) > 0 {
+			trimmed := bytes.TrimSpace(line)
+			if len(trimmed) > 0 {
+				var rec LogRecord
+				if err := json.Unmarshal(trimmed, &rec); err != nil {
+					return fmt.Errorf("parse log line: %w", err)
+				}
+				if err := fn(rec); err != nil {
+					return err
+				}
+			}
+		}
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
+// InMemory reports whether the store uses in-memory mode (no disk persistence).
 func (s *Store) InMemory() bool {
 	if s == nil {
 		return true
@@ -133,67 +182,39 @@ func (s *Store) InMemory() bool {
 	return s.inMemory
 }
 
-// Close releases Badger resources.
+// Close releases store resources.
 func (s *Store) Close() error {
-	if s == nil || s.db == nil {
+	if s == nil {
 		return nil
 	}
-	if s.globalSeq != nil {
-		_ = s.globalSeq.Release()
-		s.globalSeq = nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.logFile != nil {
+		err := s.logFile.Close()
+		s.logFile = nil
+		return err
 	}
-	if s.auditSeq != nil {
-		_ = s.auditSeq.Release()
-		s.auditSeq = nil
-	}
-	err := s.db.Close()
-	s.db = nil
-	return err
+	return nil
 }
 
 // NextSeq returns the next globally monotonic sequence number (INV-4), starting at 1.
 func (s *Store) NextSeq() (uint64, error) {
-	if s == nil || s.globalSeq == nil {
+	if s == nil {
 		return 0, fmt.Errorf("store not initialized")
 	}
-	n, err := s.globalSeq.Next()
-	if err != nil {
-		return 0, err
-	}
-	return n + 1, nil
+	return s.seq.Add(1), nil
 }
 
-func (s *Store) nextAuditID() (uint64, error) {
-	if s == nil || s.auditSeq == nil {
-		return 0, fmt.Errorf("store not initialized")
-	}
-	n, err := s.auditSeq.Next()
-	if err != nil {
-		return 0, err
-	}
-	return n + 1, nil
-}
-
-// NextAuditID allocates the next audit record id (for synchronous assignment before async write).
-func (s *Store) NextAuditID() (uint64, error) {
-	return s.nextAuditID()
-}
-
-func auditKey(id uint64) []byte {
-	return []byte(fmt.Sprintf("%s%020d", auditKeyPrefix, id))
-}
-
-func tabKey(targetID string) []byte {
-	return []byte(tabKeyPrefix + targetID)
-}
-
-// AppendAudit persists one RPC audit record (request/response should already be sanitized).
-func (s *Store) AppendAudit(rec AuditRecord) error {
-	if s == nil || s.db == nil {
+// AppendRPC appends one RPC log line and updates idle checkpoint.
+func (s *Store) AppendRPC(rec LogRecord) error {
+	if s == nil {
 		return fmt.Errorf("store not initialized")
 	}
-	if rec.ID == 0 {
-		return fmt.Errorf("audit record id required")
+	if rec.Action == "" {
+		return fmt.Errorf("log record action required")
+	}
+	if len(rec.Body) == 0 {
+		return fmt.Errorf("log record body required")
 	}
 	if rec.Time.IsZero() {
 		rec.Time = time.Now().UTC()
@@ -202,147 +223,45 @@ func (s *Store) AppendAudit(rec AuditRecord) error {
 	if err != nil {
 		return err
 	}
-	key := auditKey(rec.ID)
-	return s.db.Update(func(txn *badger.Txn) error {
-		return txn.Set(key, data)
-	})
-}
+	line := append(data, '\n')
 
-// ListAudit returns audit records with id > since, up to limit.
-func (s *Store) ListAudit(since uint64, limit int) ([]AuditRecord, uint64, error) {
-	if s == nil || s.db == nil {
-		return nil, 0, fmt.Errorf("store not initialized")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.managed == nil {
+		s.managed = make(map[string]time.Time)
 	}
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 200 {
-		limit = 200
+	if seq := applyManagedUpdate(s.managed, rec); seq > s.seq.Load() {
+		s.seq.Store(seq)
 	}
 
-	var out []AuditRecord
-	var cursor uint64
-
-	err := s.db.View(func(txn *badger.Txn) error {
-		it := txn.NewIterator(badger.DefaultIteratorOptions)
-		defer it.Close()
-		prefix := []byte(auditKeyPrefix)
-		start := auditKey(since + 1)
-		for it.Seek(start); it.ValidForPrefix(prefix); it.Next() {
-			item := it.Item()
-			var rec AuditRecord
-			if err := item.Value(func(val []byte) error {
-				return json.Unmarshal(val, &rec)
-			}); err != nil {
-				return err
-			}
-			if rec.ID <= since {
-				continue
-			}
-			out = append(out, rec)
-			if rec.ID > cursor {
-				cursor = rec.ID
-			}
-			if len(out) >= limit {
-				break
-			}
-		}
+	if s.inMemory {
+		s.memLogs = append(s.memLogs, rec)
 		return nil
-	})
-	return out, cursor, err
-}
-
-// PutTab inserts or replaces a managed tab record.
-func (s *Store) PutTab(rec TabRecord) error {
-	if s == nil || s.db == nil {
-		return fmt.Errorf("store not initialized")
 	}
-	if rec.TargetID == "" {
-		return fmt.Errorf("tab target_id required")
+	if s.logFile == nil {
+		return fmt.Errorf("log file not open")
 	}
-	if rec.OpenedAt.IsZero() {
-		rec.OpenedAt = time.Now().UTC()
+	if _, err := s.logFile.Write(line); err != nil {
+		return err
 	}
-	if rec.LastActivityAt.IsZero() {
-		rec.LastActivityAt = rec.OpenedAt
-	}
-	data, err := json.Marshal(rec)
+	offset, err := s.logFile.Seek(0, io.SeekCurrent)
 	if err != nil {
 		return err
 	}
-	return s.db.Update(func(txn *badger.Txn) error {
-		return txn.Set(tabKey(rec.TargetID), data)
+	return saveCheckpoint(s.checkpointPath, rpcCheckpoint{
+		LogOffset: offset,
+		MaxSeq:    s.seq.Load(),
+		Managed:   cloneManaged(s.managed),
 	})
 }
 
-// TouchTab updates last_activity_at for a managed tab.
-func (s *Store) TouchTab(targetID string, at time.Time) error {
-	if s == nil || s.db == nil {
-		return fmt.Errorf("store not initialized")
-	}
-	if targetID == "" {
+// ReplayManagedTabActivity returns managed tab short ids and last activity (from checkpoint + tail replay).
+func (s *Store) ReplayManagedTabActivity() map[string]time.Time {
+	if s == nil {
 		return nil
 	}
-	if at.IsZero() {
-		at = time.Now().UTC()
-	}
-	return s.db.Update(func(txn *badger.Txn) error {
-		item, err := txn.Get(tabKey(targetID))
-		if err != nil {
-			if err == badger.ErrKeyNotFound {
-				return nil
-			}
-			return err
-		}
-		var rec TabRecord
-		if err := item.Value(func(val []byte) error {
-			return json.Unmarshal(val, &rec)
-		}); err != nil {
-			return err
-		}
-		rec.LastActivityAt = at
-		data, err := json.Marshal(rec)
-		if err != nil {
-			return err
-		}
-		return txn.Set(tabKey(targetID), data)
-	})
-}
-
-// DeleteTab removes a managed tab record.
-func (s *Store) DeleteTab(targetID string) error {
-	if s == nil || s.db == nil {
-		return fmt.Errorf("store not initialized")
-	}
-	if targetID == "" {
-		return nil
-	}
-	return s.db.Update(func(txn *badger.Txn) error {
-		return txn.Delete(tabKey(targetID))
-	})
-}
-
-// ListTabs returns all managed tab records.
-func (s *Store) ListTabs() ([]TabRecord, error) {
-	if s == nil || s.db == nil {
-		return nil, fmt.Errorf("store not initialized")
-	}
-	var out []TabRecord
-	err := s.db.View(func(txn *badger.Txn) error {
-		it := txn.NewIterator(badger.DefaultIteratorOptions)
-		defer it.Close()
-		prefix := []byte(tabKeyPrefix)
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			item := it.Item()
-			var rec TabRecord
-			if err := item.Value(func(val []byte) error {
-				return json.Unmarshal(val, &rec)
-			}); err != nil {
-				return err
-			}
-			out = append(out, rec)
-		}
-		return nil
-	})
-	return out, err
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneManaged(s.managed)
 }
