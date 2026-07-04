@@ -128,10 +128,6 @@ func TestOpenDiskMode(t *testing.T) {
 	if _, err := os.Stat(logPath); err != nil {
 		t.Fatalf("expected rpc.jsonl: %v", err)
 	}
-	cpPath := filepath.Join(dir, rpcCheckpointFile)
-	if _, err := os.Stat(cpPath); err != nil {
-		t.Fatalf("expected rpc-checkpoint.json: %v", err)
-	}
 
 	s2, err := Open(OpenConfig{StateDir: dir})
 	if err != nil {
@@ -151,23 +147,21 @@ func TestOpenDiskMode(t *testing.T) {
 	}
 }
 
-func TestCheckpointSkipsFullLogScan(t *testing.T) {
+func TestOpenRebuildsManagedFromFullLog(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, rpcLogFile)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	var b strings.Builder
 	t0 := time.Now().UTC().Add(-time.Hour)
-	for i := 0; i < 2000; i++ {
-		line, err := json.Marshal(LogRecord{
-			Action: protocol.MethodGoto,
-			Body:   json.RawMessage(`{"jsonrpc":"2.0","method":"goto","params":{"tab":"aa11","url":"https://ex"},"id":1}`),
-			Tab:    "aa11",
-			OK:     true,
-			Time:   t0,
-		})
+	records := []LogRecord{
+		{Action: protocol.MethodTabNew, Body: json.RawMessage(`{"jsonrpc":"2.0","method":"tab_new","params":{},"id":1}`), Tab: "aa11", OK: true, Time: t0},
+		{Action: protocol.MethodGoto, Body: json.RawMessage(`{"jsonrpc":"2.0","method":"goto","params":{"tab":"aa11","url":"https://ex"},"id":2}`), Tab: "aa11", OK: true, Time: t0.Add(time.Minute)},
+	}
+	var b strings.Builder
+	for _, rec := range records {
+		line, err := json.Marshal(rec)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -177,21 +171,6 @@ func TestCheckpointSkipsFullLogScan(t *testing.T) {
 	if err := os.WriteFile(logPath, []byte(b.String()), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(logPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	cp := rpcCheckpoint{
-		LogOffset: info.Size(),
-		MaxSeq:    42,
-		Managed: map[string]time.Time{
-			"aa11": t0,
-		},
-	}
-	if err := saveCheckpoint(filepath.Join(dir, rpcCheckpointFile), cp); err != nil {
-		t.Fatal(err)
-	}
 
 	s, err := Open(OpenConfig{StateDir: dir})
 	if err != nil {
@@ -199,12 +178,70 @@ func TestCheckpointSkipsFullLogScan(t *testing.T) {
 	}
 	defer s.Close()
 
-	if got := s.seq.Load(); got != 42 {
-		t.Fatalf("max seq: got %d want 42", got)
-	}
 	managed := s.ReplayManagedTabActivity()
-	if len(managed) != 1 || managed["aa11"] != t0 {
+	want := t0.Add(time.Minute)
+	if len(managed) != 1 || !managed["aa11"].Equal(want) {
 		t.Fatalf("managed: %#v", managed)
+	}
+	if got := s.seq.Load(); got == 0 {
+		t.Fatal("seq should be seeded from wall clock, got 0")
+	}
+}
+
+func TestLogRotationPreservesManaged(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(OpenConfig{StateDir: dir, MaxLogBytes: 512})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	newBody := json.RawMessage(`{"jsonrpc":"2.0","method":"tab_new","params":{},"id":1}`)
+	if err := s.AppendRPC(LogRecord{
+		Action: protocol.MethodTabNew, Body: newBody, Tab: "aa11", OK: true, Time: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A tab that gets closed must NOT survive rotation.
+	if err := s.AppendRPC(LogRecord{
+		Action: protocol.MethodTabNew, Body: newBody, Tab: "bb22", OK: true, Time: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendRPC(LogRecord{
+		Action: protocol.MethodTabClose,
+		Body:   json.RawMessage(`{"jsonrpc":"2.0","method":"tab_close","params":{"tab":"bb22"},"id":2}`),
+		Tab:    "bb22", OK: true, Time: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	gotoBody := json.RawMessage(`{"jsonrpc":"2.0","method":"goto","params":{"tab":"aa11","url":"https://example.com/some/long/path"},"id":3}`)
+	for i := 0; i < 50; i++ {
+		if err := s.AppendRPC(LogRecord{
+			Action: protocol.MethodGoto, Body: gotoBody, Tab: "aa11", OK: true, Time: time.Now().UTC(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, rpcLogFile+".1")); err != nil {
+		t.Fatalf("expected rotated backup rpc.jsonl.1: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s2, err := Open(OpenConfig{StateDir: dir, MaxLogBytes: 512})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	managed := s2.ReplayManagedTabActivity()
+	if _, ok := managed["aa11"]; !ok {
+		t.Fatalf("managed tab lost across rotation: %#v", managed)
+	}
+	if _, ok := managed["bb22"]; ok {
+		t.Fatalf("closed tab resurrected by snapshot: %#v", managed)
 	}
 }
 

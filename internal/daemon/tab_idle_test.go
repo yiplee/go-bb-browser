@@ -178,9 +178,6 @@ func TestTabIdleRestartRestoresManagedTab(t *testing.T) {
 	if _, err := os.Stat(logPath); err != nil {
 		t.Fatalf("expected rpc.jsonl: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(stateDir, store.RPCCheckpointFile())); err != nil {
-		t.Fatalf("expected rpc-checkpoint.json: %v", err)
-	}
 	if err := srvA.store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +209,6 @@ func TestTabIdleRestartGraceDelaysClose(t *testing.T) {
 	expiredAt := time.Now().Add(-timeout - time.Millisecond)
 
 	logPath := filepath.Join(stateDir, store.RPCLogFile())
-	checkpointPath := filepath.Join(stateDir, store.RPCCheckpointFile())
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -228,24 +224,6 @@ func TestTabIdleRestartGraceDelaysClose(t *testing.T) {
 	}
 	logData := append(line, '\n')
 	if err := os.WriteFile(logPath, logData, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cp := struct {
-		LogOffset int64                        `json:"log_offset"`
-		MaxSeq    uint64                       `json:"max_seq"`
-		Managed   map[string]time.Time         `json:"managed"`
-	}{
-		LogOffset: int64(len(logData)),
-		MaxSeq:    1,
-		Managed: map[string]time.Time{
-			"9999": expiredAt,
-		},
-	}
-	cpBytes, err := json.Marshal(cp)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(checkpointPath, cpBytes, 0o644); err != nil {
 		t.Fatal(err)
 	}
 

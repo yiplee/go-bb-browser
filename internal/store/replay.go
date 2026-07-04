@@ -17,9 +17,12 @@ func cloneManaged(in map[string]time.Time) map[string]time.Time {
 	return out
 }
 
-func applyManagedUpdate(managed map[string]time.Time, rec LogRecord) uint64 {
+// applyManagedUpdate folds one log record into the managed-tab activity map:
+// tab_new registers a tab, tab_close releases it, and other tab-related methods
+// refresh its last-activity time.
+func applyManagedUpdate(managed map[string]time.Time, rec LogRecord) {
 	if managed == nil || !rec.OK {
-		return rec.Seq
+		return
 	}
 	tab := rec.Tab
 	if tab == "" {
@@ -41,9 +44,4 @@ func applyManagedUpdate(managed map[string]time.Time, rec LogRecord) uint64 {
 			}
 		}
 	}
-	return rec.Seq
-}
-
-func applyManagedFromLogLine(managed map[string]time.Time, rec LogRecord) {
-	applyManagedUpdate(managed, rec)
 }

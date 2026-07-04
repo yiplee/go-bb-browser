@@ -9,13 +9,28 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/yiplee/go-bb-browser/pkg/protocol"
 )
 
-const rpcLogFile = "rpc.jsonl"
+const (
+	rpcLogFile = "rpc.jsonl"
+
+	// defaultMaxLogBytes triggers rotation of rpc.jsonl once it grows past this size.
+	defaultMaxLogBytes int64 = 8 << 20 // 8 MiB
+
+	// maxLogBackups is how many rotated rpc.jsonl.N files are kept for audit.
+	maxLogBackups = 3
+)
+
+// snapshotBody is the placeholder request body written for synthetic tab_new
+// records emitted at rotation time (recovery only needs Action/Tab/Time).
+var snapshotBody = json.RawMessage(`{"jsonrpc":"2.0","method":"tab_new","params":{}}`)
 
 // RPCLogFile returns the on-disk RPC log filename under StateDir.
 func RPCLogFile() string { return rpcLogFile }
@@ -25,19 +40,22 @@ type OpenConfig struct {
 	// StateDir is the daemon state directory. "-" forces in-memory mode.
 	StateDir string
 	Logger   *slog.Logger
+	// MaxLogBytes rotates rpc.jsonl once it exceeds this size. <=0 uses defaultMaxLogBytes.
+	MaxLogBytes int64
 }
 
-// Store persists tab-related RPC lines, idle checkpoint, and allocates global seq (INV-4).
+// Store persists tab-related RPC lines and allocates global seq (INV-4).
 type Store struct {
-	mu             sync.Mutex
-	logFile        *os.File
-	logPath        string
-	checkpointPath string
-	seq            atomic.Uint64
-	managed        map[string]time.Time
-	memLogs        []LogRecord
-	logger         *slog.Logger
-	inMemory       bool
+	mu          sync.Mutex
+	logFile     *os.File
+	logPath     string
+	logBytes    int64
+	maxLogBytes int64
+	seq         atomic.Uint64
+	managed     map[string]time.Time
+	memLogs     []LogRecord
+	logger      *slog.Logger
+	inMemory    bool
 }
 
 // LogRecord is one append-only RPC log line.
@@ -52,7 +70,9 @@ type LogRecord struct {
 	Time     time.Time       `json:"time"`
 }
 
-// Open initializes rpc.jsonl and rpc-checkpoint.json on disk, or in-memory per cfg.StateDir.
+// Open initializes rpc.jsonl on disk, or in-memory per cfg.StateDir. The global
+// seq is seeded from the current wall-clock nanosecond so it stays monotonic
+// across restarts (INV-4) without persisting a counter.
 func Open(cfg OpenConfig) (*Store, error) {
 	logger := cfg.Logger
 	if logger == nil {
@@ -62,11 +82,17 @@ func Open(cfg OpenConfig) (*Store, error) {
 	dir := strings.TrimSpace(cfg.StateDir)
 	useMemory := dir == "" || dir == "-"
 
-	s := &Store{
-		logger:   logger,
-		inMemory: useMemory,
-		managed:  make(map[string]time.Time),
+	maxLogBytes := cfg.MaxLogBytes
+	if maxLogBytes <= 0 {
+		maxLogBytes = defaultMaxLogBytes
 	}
+	s := &Store{
+		logger:      logger,
+		inMemory:    useMemory,
+		managed:     make(map[string]time.Time),
+		maxLogBytes: maxLogBytes,
+	}
+	s.seq.Store(uint64(time.Now().UnixNano()))
 
 	if useMemory {
 		return s, nil
@@ -74,7 +100,6 @@ func Open(cfg OpenConfig) (*Store, error) {
 
 	dir = filepath.Clean(dir)
 	logPath := filepath.Join(dir, rpcLogFile)
-	checkpointPath := filepath.Join(dir, rpcCheckpointFile)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		logger.Warn("rpc log falling back to in-memory", "dir", dir, "err", err)
 		s.inMemory = true
@@ -86,14 +111,6 @@ func Open(cfg OpenConfig) (*Store, error) {
 		return s, nil
 	}
 
-	cp, cpErr := loadCheckpoint(checkpointPath)
-	checkpointExists := cpErr == nil
-	if cpErr != nil && !os.IsNotExist(cpErr) {
-		logger.Warn("rpc checkpoint unreadable, scanning full log", "err", cpErr)
-		cp = rpcCheckpoint{}
-		checkpointExists = false
-	}
-
 	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		logger.Warn("rpc log falling back to in-memory", "path", logPath, "err", err)
@@ -101,36 +118,20 @@ func Open(cfg OpenConfig) (*Store, error) {
 		return s, nil
 	}
 
-	managed := cloneManaged(cp.Managed)
-	maxSeq := cp.MaxSeq
-	scanFrom := cp.LogOffset
-	if !checkpointExists {
-		scanFrom = 0
-	}
-	if err := scanLogTail(f, scanFrom, func(rec LogRecord) error {
-		applyManagedFromLogLine(managed, rec)
+	managed := make(map[string]time.Time)
+	if err := replayLog(f, func(rec LogRecord) error {
+		applyManagedUpdate(managed, rec)
 		return nil
 	}); err != nil {
 		_ = f.Close()
-		return nil, fmt.Errorf("scan rpc log tail: %w", err)
+		return nil, fmt.Errorf("replay rpc log: %w", err)
 	}
 
 	s.logFile = f
 	s.logPath = logPath
-	s.checkpointPath = checkpointPath
 	s.managed = managed
-	if maxSeq > 0 {
-		s.seq.Store(maxSeq)
-	}
-
-	if offset, err := f.Seek(0, io.SeekEnd); err == nil && offset > 0 && (!checkpointExists || cp.LogOffset == 0) {
-		if err := saveCheckpoint(checkpointPath, rpcCheckpoint{
-			LogOffset: offset,
-			MaxSeq:    s.seq.Load(),
-			Managed:   cloneManaged(managed),
-		}); err != nil && logger != nil {
-			logger.Warn("write initial rpc checkpoint failed", "err", err)
-		}
+	if fi, err := f.Stat(); err == nil {
+		s.logBytes = fi.Size()
 	}
 	return s, nil
 }
@@ -144,8 +145,10 @@ func dirWritable(dir string) bool {
 	return true
 }
 
-func scanLogTail(f *os.File, offset int64, fn func(LogRecord) error) error {
-	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+// replayLog reads the full log from the start, invoking fn per record, then
+// leaves the file positioned at the end for subsequent appends.
+func replayLog(f *os.File, fn func(LogRecord) error) error {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
 	defer func() { _, _ = f.Seek(0, io.SeekEnd) }()
@@ -197,7 +200,9 @@ func (s *Store) Close() error {
 	return nil
 }
 
-// NextSeq returns the next globally monotonic sequence number (INV-4), starting at 1.
+// NextSeq returns the next globally monotonic sequence number (INV-4). It is
+// seeded from the wall-clock nanosecond at Open, so values keep increasing
+// across restarts without persisting a counter.
 func (s *Store) NextSeq() (uint64, error) {
 	if s == nil {
 		return 0, fmt.Errorf("store not initialized")
@@ -205,7 +210,7 @@ func (s *Store) NextSeq() (uint64, error) {
 	return s.seq.Add(1), nil
 }
 
-// AppendRPC appends one RPC log line and updates idle checkpoint.
+// AppendRPC appends one RPC log line and updates in-memory managed-tab state.
 func (s *Store) AppendRPC(rec LogRecord) error {
 	if s == nil {
 		return fmt.Errorf("store not initialized")
@@ -231,9 +236,7 @@ func (s *Store) AppendRPC(rec LogRecord) error {
 	if s.managed == nil {
 		s.managed = make(map[string]time.Time)
 	}
-	if seq := applyManagedUpdate(s.managed, rec); seq > s.seq.Load() {
-		s.seq.Store(seq)
-	}
+	applyManagedUpdate(s.managed, rec)
 
 	if s.inMemory {
 		s.memLogs = append(s.memLogs, rec)
@@ -245,18 +248,79 @@ func (s *Store) AppendRPC(rec LogRecord) error {
 	if _, err := s.logFile.Write(line); err != nil {
 		return err
 	}
-	offset, err := s.logFile.Seek(0, io.SeekCurrent)
+	s.logBytes += int64(len(line))
+	if s.maxLogBytes > 0 && s.logBytes >= s.maxLogBytes {
+		if err := s.rotateLocked(); err != nil && s.logger != nil {
+			s.logger.Warn("rpc log rotation failed", "err", err)
+		}
+	}
+	return nil
+}
+
+// rotateLocked rolls rpc.jsonl into numbered backups and starts a fresh log,
+// seeding it with a snapshot of currently managed tabs so idle recovery still
+// works after reading only the current file. Caller holds s.mu.
+func (s *Store) rotateLocked() error {
+	if s.logFile == nil {
+		return nil
+	}
+	if err := s.logFile.Close(); err != nil && s.logger != nil {
+		s.logger.Warn("closing rpc log before rotation failed", "err", err)
+	}
+	s.logFile = nil
+
+	if maxLogBackups <= 0 {
+		_ = os.Remove(s.logPath)
+	} else {
+		_ = os.Remove(fmt.Sprintf("%s.%d", s.logPath, maxLogBackups))
+		for k := maxLogBackups - 1; k >= 1; k-- {
+			_ = os.Rename(fmt.Sprintf("%s.%d", s.logPath, k), fmt.Sprintf("%s.%d", s.logPath, k+1))
+		}
+		_ = os.Rename(s.logPath, fmt.Sprintf("%s.1", s.logPath))
+	}
+
+	f, err := os.OpenFile(s.logPath, os.O_APPEND|os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o644)
 	if err != nil {
 		return err
 	}
-	return saveCheckpoint(s.checkpointPath, rpcCheckpoint{
-		LogOffset: offset,
-		MaxSeq:    s.seq.Load(),
-		Managed:   cloneManaged(s.managed),
-	})
+	s.logFile = f
+	s.logBytes = 0
+	return s.writeManagedSnapshotLocked()
 }
 
-// ReplayManagedTabActivity returns managed tab short ids and last activity (from checkpoint + tail replay).
+// writeManagedSnapshotLocked writes one synthetic tab_new record per managed tab
+// (sorted for determinism) to the current log. Caller holds s.mu.
+func (s *Store) writeManagedSnapshotLocked() error {
+	if len(s.managed) == 0 {
+		return nil
+	}
+	shorts := make([]string, 0, len(s.managed))
+	for short := range s.managed {
+		shorts = append(shorts, short)
+	}
+	sort.Strings(shorts)
+
+	var buf bytes.Buffer
+	for _, short := range shorts {
+		data, err := json.Marshal(LogRecord{
+			Action: protocol.MethodTabNew,
+			Body:   snapshotBody,
+			Tab:    short,
+			OK:     true,
+			Time:   s.managed[short],
+		})
+		if err != nil {
+			return err
+		}
+		buf.Write(data)
+		buf.WriteByte('\n')
+	}
+	n, err := s.logFile.Write(buf.Bytes())
+	s.logBytes += int64(n)
+	return err
+}
+
+// ReplayManagedTabActivity returns managed tab short ids and last activity, rebuilt by replaying the log at startup.
 func (s *Store) ReplayManagedTabActivity() map[string]time.Time {
 	if s == nil {
 		return nil
