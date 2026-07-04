@@ -4,8 +4,18 @@ import (
 	"encoding/json"
 )
 
-// ParseRPCAuditSummary extracts tab, seq, and ok/error from a JSON-RPC response body.
-func ParseRPCAuditSummary(resp []byte) (tab string, seq uint64, ok bool, errMsg string) {
+// ParseResponseSummary extracts tab, seq, and ok/error from a JSON-RPC response body.
+func ParseResponseSummary(resp []byte) (tab string, seq uint64, ok bool, errMsg string) {
+	return parseResponseSummary(resp)
+}
+
+// TabFromRequestBody reads optional "tab" from JSON-RPC request params.
+func TabFromRequestBody(body json.RawMessage) string {
+	return tabFromRequestBody(body)
+}
+
+// parseResponseSummary extracts tab, seq, and ok/error from a JSON-RPC response body.
+func parseResponseSummary(resp []byte) (tab string, seq uint64, ok bool, errMsg string) {
 	var env struct {
 		Result json.RawMessage `json:"result"`
 		Error  *struct {
@@ -36,8 +46,8 @@ func ParseRPCAuditSummary(resp []byte) (tab string, seq uint64, ok bool, errMsg 
 	return r.Tab, r.Seq, true, ""
 }
 
-// TabFromRequestBody reads optional "tab" from JSON-RPC request params.
-func TabFromRequestBody(body json.RawMessage) string {
+// tabFromRequestBody reads optional "tab" from JSON-RPC request params.
+func tabFromRequestBody(body json.RawMessage) string {
 	var req struct {
 		Params json.RawMessage `json:"params"`
 	}

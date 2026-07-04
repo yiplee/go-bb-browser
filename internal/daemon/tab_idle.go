@@ -7,7 +7,6 @@ import (
 
 	"github.com/chromedp/cdproto/target"
 	"github.com/yiplee/go-bb-browser/internal/state"
-	"github.com/yiplee/go-bb-browser/internal/store"
 )
 
 var (
@@ -19,40 +18,17 @@ func (s *Server) markTabManaged(tid target.ID, short, openURL string, silent boo
 	if s.tabIdle != nil {
 		s.tabIdle.MarkManaged(tid)
 	}
-	if s.store != nil {
-		now := time.Now().UTC()
-		if err := s.store.PutTab(store.TabRecord{
-			TargetID:       string(tid),
-			ShortID:        short,
-			OpenURL:        openURL,
-			OpenedAt:       now,
-			LastActivityAt: now,
-			Silent:         silent,
-		}); err != nil && s.logger != nil {
-			s.logger.Warn("put tab record failed", "err", err)
-		}
-	}
 }
 
 func (s *Server) touchTabActivity(tid target.ID) {
 	if s.tabIdle != nil {
 		s.tabIdle.Touch(tid)
 	}
-	if s.store != nil {
-		if err := s.store.TouchTab(string(tid), time.Now().UTC()); err != nil && s.logger != nil {
-			s.logger.Warn("touch tab record failed", "err", err)
-		}
-	}
 }
 
 func (s *Server) forgetTabManaged(tid target.ID) {
 	if s.tabIdle != nil {
 		s.tabIdle.Forget(tid)
-	}
-	if s.store != nil {
-		if err := s.store.DeleteTab(string(tid)); err != nil && s.logger != nil {
-			s.logger.Warn("delete tab record failed", "err", err)
-		}
 	}
 }
 
@@ -76,17 +52,11 @@ func (s *Server) syncTabIdlePresence(snaps []state.TabSnapshot) {
 	s.tabIdle.SyncPresent(present)
 }
 
-func (s *Server) reconcileIdleFromDisk(snaps []state.TabSnapshot) {
+func (s *Server) reconcileIdleFromLog(snaps []state.TabSnapshot) {
 	if s.tabIdle == nil || s.store == nil {
 		return
 	}
-	loaded, err := s.store.ListTabs()
-	if err != nil {
-		if s.logger != nil {
-			s.logger.Warn("load tab records failed", "err", err)
-		}
-		loaded = nil
-	}
+	loaded := s.store.ReplayManagedTabActivity()
 
 	now := time.Now()
 	timeout := s.cfg.TabIdleTimeout
@@ -103,18 +73,18 @@ func (s *Server) reconcileIdleFromDisk(snaps []state.TabSnapshot) {
 		}
 		present[sn.TargetID] = struct{}{}
 	}
-	for _, rec := range loaded {
-		tid := target.ID(rec.TargetID)
+	for shortID, lastAt := range loaded {
+		tid, ok := s.tabs.Lookup(shortID)
+		if !ok {
+			continue
+		}
 		if _, ok := present[tid]; !ok {
 			continue
 		}
-		effective := rec.LastActivityAt
+		effective := lastAt
 		if effective.Before(minLast) {
 			effective = minLast
 		}
-		// Only restore tabs not already tracked in memory: reconciliation must
-		// never overwrite (or re-apply the startup grace to) live idle timers,
-		// otherwise repeated syncs would keep idle tabs alive forever.
 		s.tabIdle.MarkManagedIfAbsentAt(tid, effective)
 	}
 }

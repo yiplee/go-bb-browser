@@ -1,6 +1,7 @@
 # Go
 /bin/
 /dist/
+/bb-daemon
 *.exe
 *.test
 *.out
@@ -12,4 +13,3 @@ coverage.out
 .vscode/
 *.swp
 .DS_Store
-bb-daemon

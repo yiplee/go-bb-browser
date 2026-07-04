@@ -66,19 +66,24 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 	params := protocol.NormalizeParams(req.Params)
 	method := strings.TrimSpace(req.Method)
 
-	if protocol.IsTabRelatedMethod(method) {
-		ctx = contextWithAudit(ctx, &auditMeta{
-			action:   method,
-			body:     json.RawMessage(rawBody),
-			senderIP: store.ClientIP(r),
-			at:       time.Now().UTC(),
+	if !protocol.IsDispatchedMethod(method) {
+		if method == "" {
+			s.rpcErr(ctx, w, id, protocol.CodeInvalidRequest, "missing method", nil)
+			return
+		}
+		s.rpcErr(ctx, w, id, protocol.CodeMethodNotFound, "method not found", &protocol.ErrData{
+			Error:  "unknown method",
+			Method: method,
 		})
-	}
-
-	if method == protocol.MethodAuditList {
-		s.handleAuditList(ctx, w, id, params)
 		return
 	}
+
+	ctx = contextWithAudit(ctx, &auditMeta{
+		action:   method,
+		body:     json.RawMessage(rawBody),
+		senderIP: store.ClientIP(r),
+		at:       time.Now().UTC(),
+	})
 
 	if err := s.ensureBrowserSession(ctx); err != nil {
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "browser not connected", &protocol.ErrData{
@@ -131,15 +136,6 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		s.handleConsoleClear(ctx, w, id, params)
 	case protocol.MethodErrorsClear:
 		s.handleErrorsClear(ctx, w, id, params)
-	default:
-		if method == "" {
-			s.rpcErr(ctx, w, id, protocol.CodeInvalidRequest, "missing method", nil)
-			return
-		}
-		s.rpcErr(ctx, w, id, protocol.CodeMethodNotFound, "method not found", &protocol.ErrData{
-			Error:  "unknown method",
-			Method: method,
-		})
 	}
 }
 
@@ -163,35 +159,26 @@ func (s *Server) scheduleAudit(ctx context.Context, resp []byte) {
 	if meta == nil || s.store == nil {
 		return
 	}
-	auditID, err := s.store.NextAuditID()
-	if err != nil {
-		if s.logger != nil {
-			s.logger.Warn("audit id allocation failed", "err", err, "action", meta.action)
-		}
-		return
-	}
-	action := meta.action
-	senderIP := meta.senderIP
-	at := meta.at
-	tab, seq, ok, errMsg := store.ParseRPCAuditSummary(resp)
+	tab, seq, ok, errMsg := store.ParseResponseSummary(resp)
 	if tab == "" {
 		tab = store.TabFromRequestBody(meta.body)
 	}
-	rec := store.AuditRecord{
-		ID:       auditID,
-		Action:   action,
+	rec := store.LogRecord{
+		Action:   meta.action,
+		Body:     meta.body,
 		Tab:      tab,
-		SenderIP: senderIP,
+		SenderIP: meta.senderIP,
 		Seq:      seq,
 		OK:       ok,
 		Error:    errMsg,
-		Time:     at,
+		Time:     meta.at,
 	}
+	action := meta.action
 	s.auditWG.Add(1)
 	go func() {
 		defer s.auditWG.Done()
-		if err := s.store.AppendAudit(rec); err != nil && s.logger != nil {
-			s.logger.Warn("append audit failed", "err", err, "action", action)
+		if err := s.store.AppendRPC(rec); err != nil && s.logger != nil {
+			s.logger.Warn("append rpc log failed", "err", err, "action", action)
 		}
 	}()
 }
@@ -1142,49 +1129,6 @@ func (s *Server) handleErrorsClear(ctx context.Context, w http.ResponseWriter, i
 		return
 	}
 	s.rpcOK(ctx, w, id, protocol.ErrorsClearResult{Tab: tab, Seq: seq})
-}
-
-func (s *Server) handleAuditList(ctx context.Context, w http.ResponseWriter, id json.RawMessage, params json.RawMessage) {
-	var p protocol.AuditListParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		s.rpcErr(ctx, w, id, protocol.CodeInvalidParams, "invalid params", nil)
-		return
-	}
-	limit := p.Limit
-	if limit <= 0 {
-		limit = 50
-	}
-	records, cursor, err := s.store.ListAudit(p.Since, limit)
-	if err != nil {
-		s.logger.Error("audit_list failed", "err", err)
-		s.rpcErr(ctx, w, id, protocol.CodeServerError, "audit list failed", &protocol.ErrData{
-			Error: "audit list failed",
-			Hint:  err.Error(),
-		})
-		return
-	}
-	out := make([]protocol.AuditRecord, 0, len(records))
-	for _, rec := range records {
-		out = append(out, protocol.AuditRecord{
-			ID:       rec.ID,
-			Action:   rec.Action,
-			Tab:      rec.Tab,
-			SenderIP: rec.SenderIP,
-			Seq:      rec.Seq,
-			OK:       rec.OK,
-			Error:    rec.Error,
-			Time:     rec.Time,
-		})
-	}
-	seq, ok := s.nextSeq(ctx, w, id)
-	if !ok {
-		return
-	}
-	s.rpcOK(ctx, w, id, protocol.AuditListResult{
-		Seq:     seq,
-		Cursor:  cursor,
-		Records: out,
-	})
 }
 
 func (s *Server) handleNetworkClear(ctx context.Context, w http.ResponseWriter, id json.RawMessage, params json.RawMessage) {

@@ -151,8 +151,8 @@ func TestV1TabListWithoutTabParam(t *testing.T) {
 	if env.ID != 1 {
 		t.Fatalf("id %d want 1", env.ID)
 	}
-	if env.Result.Seq != 1 {
-		t.Fatalf("seq %d want 1", env.Result.Seq)
+	if env.Result.Seq == 0 {
+		t.Fatalf("seq %d want > 0", env.Result.Seq)
 	}
 	if env.Result.Tab != "3456" {
 		t.Fatalf("tab %q want 3456 (first when no focus)", env.Result.Tab)
@@ -192,8 +192,8 @@ func TestV1TabFocus(t *testing.T) {
 	if env.ID != 1 {
 		t.Fatalf("id %d want 1", env.ID)
 	}
-	if env.Result.Seq != 1 {
-		t.Fatalf("seq %d want 1", env.Result.Seq)
+	if env.Result.Seq == 0 {
+		t.Fatalf("seq %d want > 0", env.Result.Seq)
 	}
 	if env.Result.Tab != "3456" {
 		t.Fatalf("tab %q want 3456", env.Result.Tab)

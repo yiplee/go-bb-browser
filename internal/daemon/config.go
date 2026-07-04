@@ -27,11 +27,14 @@ type Config struct {
 	// TabIdleTimeout closes daemon-created tabs after this idle period; 0 disables cleanup.
 	TabIdleTimeout time.Duration
 
-	// StateDir holds daemon Badger state (managed tabs, RPC audit, global seq). "-" uses in-memory Badger.
+	// StateDir holds daemon RPC log and global seq. "-" uses in-memory mode.
 	StateDir string
 
 	// IdleStartupGrace prevents immediate mass-close of restored tabs after daemon restart.
 	IdleStartupGrace time.Duration
+
+	// MaxLogBytes rotates rpc.jsonl once it exceeds this size; <=0 uses DefaultMaxLogBytes.
+	MaxLogBytes int64
 }
 
 const (
@@ -39,6 +42,7 @@ const (
 	DefaultMaxBodyBytes     = 1 << 20 // 1 MiB
 	DefaultTabIdleTimeout   = 5 * time.Minute
 	DefaultIdleStartupGrace = 30 * time.Second
+	DefaultMaxLogBytes      = 8 << 20 // 8 MiB
 	defaultStateDirRel      = ".local/state/bb-daemon"
 )
 
@@ -74,6 +78,9 @@ func (c *Config) Validate() error {
 	}
 	if c.IdleStartupGrace <= 0 {
 		c.IdleStartupGrace = DefaultIdleStartupGrace
+	}
+	if c.MaxLogBytes <= 0 {
+		c.MaxLogBytes = DefaultMaxLogBytes
 	}
 	if dir := strings.TrimSpace(c.StateDir); dir != "" && dir != stateDirDisabled {
 		c.StateDir = filepath.Clean(dir)

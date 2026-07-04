@@ -66,9 +66,9 @@ func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 	if strings.TrimSpace(cfg.StateDir) == stateDirDisabled {
 		stateDir = stateDirDisabled
 	}
-	st, err := store.Open(store.OpenConfig{StateDir: stateDir, Logger: logger})
+	st, err := store.Open(store.OpenConfig{StateDir: stateDir, Logger: logger, MaxLogBytes: cfg.MaxLogBytes})
 	if err != nil {
-		return nil, fmt.Errorf("badger store: %w", err)
+		return nil, fmt.Errorf("rpc log store: %w", err)
 	}
 	s.store = st
 	s.obsSink = &obsSink{store: st, obs: obsStore, logger: logger}

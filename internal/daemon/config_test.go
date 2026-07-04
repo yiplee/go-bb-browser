@@ -47,6 +47,9 @@ func TestConfigValidate_DefaultListenAndBodyLimit(t *testing.T) {
 	if c.MaxBodyBytes != DefaultMaxBodyBytes {
 		t.Fatalf("max body: got %d want %d", c.MaxBodyBytes, DefaultMaxBodyBytes)
 	}
+	if c.MaxLogBytes != DefaultMaxLogBytes {
+		t.Fatalf("max log bytes: got %d want %d", c.MaxLogBytes, DefaultMaxLogBytes)
+	}
 }
 
 func TestValidateDebuggerEndpoint(t *testing.T) {
