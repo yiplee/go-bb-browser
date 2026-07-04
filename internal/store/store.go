@@ -70,9 +70,11 @@ type LogRecord struct {
 	Time     time.Time       `json:"time"`
 }
 
-// Open initializes rpc.jsonl on disk, or in-memory per cfg.StateDir. The global
-// seq is seeded from the current wall-clock nanosecond so it stays monotonic
-// across restarts (INV-4) without persisting a counter.
+// Open initializes rpc.jsonl on disk, or in-memory when cfg.StateDir is "" or
+// "-". A configured StateDir that cannot be created or written returns an error
+// rather than silently falling back to in-memory. The global seq is seeded from
+// the current wall-clock nanosecond so it stays monotonic across restarts
+// (INV-4) without persisting a counter.
 func Open(cfg OpenConfig) (*Store, error) {
 	logger := cfg.Logger
 	if logger == nil {
@@ -101,21 +103,15 @@ func Open(cfg OpenConfig) (*Store, error) {
 	dir = filepath.Clean(dir)
 	logPath := filepath.Join(dir, rpcLogFile)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		logger.Warn("rpc log falling back to in-memory", "dir", dir, "err", err)
-		s.inMemory = true
-		return s, nil
+		return nil, fmt.Errorf("create state dir %q: %w", dir, err)
 	}
 	if !dirWritable(dir) {
-		logger.Warn("rpc log falling back to in-memory", "dir", dir, "err", "directory not writable")
-		s.inMemory = true
-		return s, nil
+		return nil, fmt.Errorf("state dir %q is not writable", dir)
 	}
 
 	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
-		logger.Warn("rpc log falling back to in-memory", "path", logPath, "err", err)
-		s.inMemory = true
-		return s, nil
+		return nil, fmt.Errorf("open rpc log %q: %w", logPath, err)
 	}
 
 	managed := make(map[string]time.Time)

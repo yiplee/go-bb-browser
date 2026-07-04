@@ -260,7 +260,10 @@ func TestTabIdleRestartGraceDelaysClose(t *testing.T) {
 	}
 }
 
-func TestUnwritableStateDirUsesInMemoryStore(t *testing.T) {
+func TestUnwritableStateDirErrors(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permission bits")
+	}
 	readOnlyDir := t.TempDir()
 	if err := os.Chmod(readOnlyDir, 0o555); err != nil {
 		t.Skip("cannot chmod read-only:", err)
@@ -277,19 +280,9 @@ func TestUnwritableStateDirUsesInMemoryStore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv, err := NewServer(cfg, nil)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := NewServer(cfg, nil); err == nil {
+		t.Fatal("expected error for unwritable state dir")
 	}
-	if srv.store == nil {
-		t.Fatal("expected store")
-	}
-	if !srv.store.InMemory() {
-		t.Fatal("expected in-memory store for unwritable state dir")
-	}
-	fc := &fakeConn{infos: []*target.Info{}}
-	srv.tabHook = fc
-	postRPC(t, srv, rpcReq(protocol.MethodTabNew, map[string]any{}, 1))
 }
 
 func TestSyncTabIdlePresenceKeepsLog(t *testing.T) {
