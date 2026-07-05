@@ -31,6 +31,13 @@ func (f *fakeConn) PageTargets() ([]*target.Info, error) {
 	return f.infos, nil
 }
 
+func (f *fakeConn) PingBrowser() error {
+	if f.pageErr != nil {
+		return f.pageErr
+	}
+	return nil
+}
+
 func (f *fakeConn) CreatePageTarget(initialURL string, _ bool) (target.ID, error) {
 	if f.createErr != nil {
 		return "", f.createErr

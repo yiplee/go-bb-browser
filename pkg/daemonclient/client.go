@@ -95,26 +95,38 @@ func (c *Client) nextID() json.RawMessage {
 	return json.RawMessage(b)
 }
 
-// Health checks GET /health.
+// Health checks GET /health. The daemon must report browser connectivity (HTTP 200).
 func (c *Client) Health(ctx context.Context) error {
+	_, err := c.HealthResult(ctx)
+	return err
+}
+
+// HealthResult performs GET /health and decodes the response body.
+func (c *Client) HealthResult(ctx context.Context) (protocol.HealthResult, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/health", nil)
 	if err != nil {
-		return err
+		return protocol.HealthResult{}, err
 	}
 	c.applyHeaders(req)
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
-		return err
+		return protocol.HealthResult{}, err
 	}
 	defer resp.Body.Close()
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return protocol.HealthResult{}, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return &HTTPError{StatusCode: resp.StatusCode, Body: string(b)}
+		var out protocol.HealthResult
+		_ = json.Unmarshal(b, &out)
+		return out, &HTTPError{StatusCode: resp.StatusCode, Body: string(b)}
 	}
-	return nil
+	var out protocol.HealthResult
+	if err := json.Unmarshal(b, &out); err != nil {
+		return protocol.HealthResult{}, fmt.Errorf("decode health response: %w", err)
+	}
+	return out, nil
 }
 
 // Call performs a single JSON-RPC request on POST /v1. result must be a non-nil pointer

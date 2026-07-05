@@ -90,7 +90,7 @@ Requires Chrome with remote debugging and a running bb-daemon (see README).`),
 func newHealthCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "health",
-		Short: "GET /health from the daemon",
+		Short: "GET /health (daemon + Chrome CDP connectivity)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, cancel := context.WithTimeout(cmd.Context(), 60*time.Second)
 			defer cancel()
@@ -1228,11 +1228,22 @@ func cmdHealth(ctx context.Context, base string, jsonOut bool) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("health: HTTP %d: %s", resp.StatusCode, string(b))
 	}
+	var result protocol.HealthResult
+	if err := json.Unmarshal(b, &result); err != nil {
+		return fmt.Errorf("decode health response: %w", err)
+	}
 	if jsonOut {
 		fmt.Println(string(b))
 		return nil
 	}
-	fmt.Println("ok")
+	switch result.Browser {
+	case protocol.HealthBrowserConnected:
+		fmt.Println("ok (browser connected)")
+	case protocol.HealthBrowserSkipped:
+		fmt.Println("ok (browser skipped)")
+	default:
+		fmt.Println("ok")
+	}
 	return nil
 }
 

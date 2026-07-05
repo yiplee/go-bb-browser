@@ -3,11 +3,15 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/chromedp/cdproto/target"
+	"github.com/yiplee/go-bb-browser/pkg/protocol"
 )
 
 func TestHealthGet(t *testing.T) {
@@ -23,6 +27,7 @@ func TestHealthGet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	srv.SkipBrowserAttach = true
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
@@ -34,12 +39,83 @@ func TestHealthGet(t *testing.T) {
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("status %d", res.StatusCode)
 	}
-	var body map[string]string
+	var body protocol.HealthResult
 	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if body["status"] != "ok" {
-		t.Fatalf("body: %#v", body)
+	if body.Status != "ok" {
+		t.Fatalf("status field: %#v", body)
+	}
+	if body.Browser != protocol.HealthBrowserSkipped {
+		t.Fatalf("browser field: %#v", body)
+	}
+}
+
+func TestHealthBrowserConnected(t *testing.T) {
+	cfg := Config{
+		DebuggerURL: "127.0.0.1:9222",
+		ListenAddr:  "127.0.0.1:0",
+		StateDir:    stateDirDisabled,
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.tabHook = &fakeConn{infos: []*target.Info{{TargetID: "T1", Type: "page"}}}
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	res, err := http.Get(ts.URL + "/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", res.StatusCode)
+	}
+	var body protocol.HealthResult
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Browser != protocol.HealthBrowserConnected {
+		t.Fatalf("browser field: %#v", body)
+	}
+}
+
+func TestHealthBrowserDisconnected(t *testing.T) {
+	cfg := Config{
+		DebuggerURL: "127.0.0.1:9222",
+		ListenAddr:  "127.0.0.1:0",
+		StateDir:    stateDirDisabled,
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.tabHook = &fakeConn{pageErr: fmt.Errorf("cdp down")}
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	res, err := http.Get(ts.URL + "/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status %d", res.StatusCode)
+	}
+	var body protocol.HealthResult
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Browser != protocol.HealthBrowserDisconnected {
+		t.Fatalf("browser field: %#v", body)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
@@ -241,6 +242,19 @@ func (s *Session) Close() {
 	if s.cancel != nil {
 		s.cancel = nil
 	}
+}
+
+// PingBrowser checks CDP connectivity with a lightweight Browser.getVersion call.
+func (s *Session) PingBrowser() error {
+	if s == nil {
+		return errNilSession()
+	}
+	ex := browserExecutor(s.ctx)
+	if ex == nil {
+		return fmt.Errorf("browser not available in context")
+	}
+	_, _, _, _, _, err := browser.GetVersion().Do(cdp.WithExecutor(s.ctx, ex))
+	return err
 }
 
 // PageTargets returns Target API targets filtered to page-like tabs.

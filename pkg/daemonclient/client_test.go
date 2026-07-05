@@ -19,7 +19,7 @@ func TestHealth_ok(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok","browser":"connected"}`))
 	}))
 	defer srv.Close()
 
@@ -142,7 +142,9 @@ func TestWithHeaders_sentOnHealthAndCall(t *testing.T) {
 		}
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/health":
+			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"ok","browser":"connected"}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/v1":
 			b, _ := io.ReadAll(r.Body)
 			var req struct {
@@ -177,7 +179,9 @@ func TestWithHeader_and_WithHeaders_merge(t *testing.T) {
 			return
 		}
 		if r.Method == http.MethodGet && r.URL.Path == "/health" {
+			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"ok","browser":"connected"}`))
 			return
 		}
 		http.NotFound(w, r)

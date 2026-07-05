@@ -60,6 +60,8 @@ if err := c.Health(ctx); err != nil {
 ```
 
 - 请求：`GET {BaseURL}/health`（若有 `Client.Headers`，用 `Header.Set` 写入）
+- 成功：HTTP **200**，body 形如 `{"status":"ok","browser":"connected"}`（`browser` 还可能为 `skipped`）
+- 失败：HTTP **503** 且 `browser` 为 `disconnected` 时，`Health` / `HealthResult` 返回错误
 - 成功：HTTP 200（响应体内容当前未解析，仅校验状态码）
 
 ## 通用调用：`Call`

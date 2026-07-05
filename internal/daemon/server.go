@@ -16,6 +16,7 @@ import (
 	"github.com/yiplee/go-bb-browser/internal/browser"
 	"github.com/yiplee/go-bb-browser/internal/state"
 	"github.com/yiplee/go-bb-browser/internal/store"
+	"github.com/yiplee/go-bb-browser/pkg/protocol"
 )
 
 // Server is the HTTP API front-end for the daemon (JSON-RPC over POST /v1).
@@ -114,14 +115,20 @@ func (s *Server) handleHealthRoute(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 }
 
-func (s *Server) handleHealthGet(w http.ResponseWriter, _ *http.Request) {
-	b, err := json.Marshal(map[string]string{"status": "ok"})
+func (s *Server) handleHealthGet(w http.ResponseWriter, r *http.Request) {
+	result := s.healthResult(r.Context())
+	b, err := json.Marshal(result)
 	if err != nil {
 		s.logger.Error("health json encode failed", "err", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	status := http.StatusOK
+	if result.Browser == protocol.HealthBrowserDisconnected {
+		status = http.StatusServiceUnavailable
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
 	if _, err := w.Write(b); err != nil {
 		s.logger.Error("health response write failed", "err", err)
 	}
