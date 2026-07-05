@@ -220,6 +220,7 @@ func (s *Store) AppendRPC(rec LogRecord) error {
 	if rec.Time.IsZero() {
 		rec.Time = time.Now().UTC()
 	}
+	rec.Body = compactRPCLogBody(rec.Body)
 	data, err := json.Marshal(rec)
 	if err != nil {
 		return err
