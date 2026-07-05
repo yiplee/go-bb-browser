@@ -2,6 +2,7 @@
 /bin/
 /dist/
 /bb-daemon
+/bb-browser
 *.exe
 *.test
 *.out
