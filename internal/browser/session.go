@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -18,6 +19,14 @@ import (
 	"github.com/chromedp/chromedp"
 	"github.com/yiplee/go-bb-browser/internal/state"
 )
+
+const DefaultOpTimeout = 30 * time.Second
+
+// ConnectOptions configures browser.Connect.
+type ConnectOptions struct {
+	OpTimeout time.Duration
+	Logger    *slog.Logger
+}
 
 func errNilSession() error {
 	return fmt.Errorf("browser session is nil")
@@ -36,6 +45,9 @@ func browserExecutor(ctx context.Context) cdp.Executor {
 type Session struct {
 	ctx    context.Context
 	cancel context.CancelFunc // cancels chromedp context then allocator
+
+	opTimeout time.Duration
+	logger    *slog.Logger
 
 	routeState *routeState
 
@@ -137,11 +149,44 @@ func connectFailureHint(err error) string {
 	}
 }
 
+// opCtx returns a child of base with the session's per-operation CDP timeout.
+func (s *Session) opCtx(base context.Context) (context.Context, context.CancelFunc) {
+	timeout := DefaultOpTimeout
+	if s != nil && s.opTimeout > 0 {
+		timeout = s.opTimeout
+	}
+	return context.WithTimeout(base, timeout)
+}
+
+// runTabOp runs chromedp actions on tabCtx bounded by the session op timeout.
+func (s *Session) runTabOp(tabCtx context.Context, actions ...chromedp.Action) error {
+	opCtx, cancel := s.opCtx(tabCtx)
+	defer cancel()
+	return chromedp.Run(opCtx, actions...)
+}
+
 // Connect opens a CDP session to an already-running Chrome instance.
 // debuggerURL may be host:port, ws(s) URL, or http(s) URL (chromedp resolves to browser websocket).
-func Connect(parent context.Context, debuggerURL string) (*Session, error) {
+func Connect(parent context.Context, debuggerURL string, opts ConnectOptions) (*Session, error) {
 	if debuggerURL == "" {
 		return nil, fmt.Errorf("debugger URL is empty")
+	}
+	opTimeout := opts.OpTimeout
+	if opTimeout <= 0 {
+		opTimeout = DefaultOpTimeout
+	}
+	lg := opts.Logger
+	if lg == nil {
+		lg = slog.Default()
+	}
+	chromeLog := func(level slog.Level) func(string, ...any) {
+		return func(format string, args ...any) {
+			lg.Log(context.Background(), level, fmt.Sprintf(format, args...))
+		}
+	}
+	browserCtxOpts := []chromedp.ContextOption{
+		chromedp.WithLogf(chromeLog(slog.LevelDebug)),
+		chromedp.WithErrorf(chromeLog(slog.LevelError)),
 	}
 	base := remoteAllocatorURL(debuggerURL)
 	attachID, err := firstExistingPageTabID(parent, httpDebuggerBase(debuggerURL))
@@ -157,17 +202,22 @@ func Connect(parent context.Context, debuggerURL string) (*Session, error) {
 	// RemoteAllocator starts a goroutine on Allocate that waits on Run's ctx.Done()
 	// then calls chromedp.Cancel — cancelling a timeout child after Connect returns
 	// would tear down the browser session (symptom: later CDP ops return "context canceled").
+	sess := &Session{opTimeout: opTimeout, logger: lg}
+
 	tryRun := func(targetID target.ID) (context.Context, context.CancelFunc, error) {
 		var c context.Context
 		var cancel context.CancelFunc
 		if targetID != "" {
 			// Attach to an existing page/tab; chromedp's default first Run otherwise
 			// creates a new about:blank target (Target.createTarget).
-			c, cancel = chromedp.NewContext(allocCtx, chromedp.WithTargetID(targetID))
+			c, cancel = chromedp.NewContext(allocCtx, append(browserCtxOpts, chromedp.WithTargetID(targetID))...)
 		} else {
-			c, cancel = chromedp.NewContext(allocCtx)
+			c, cancel = chromedp.NewContext(allocCtx, browserCtxOpts...)
 		}
-		if err := chromedp.Run(c); err != nil {
+		runCtx, runCancel := sess.opCtx(c)
+		err := chromedp.Run(runCtx)
+		runCancel()
+		if err != nil {
 			cancel()
 			return nil, nil, err
 		}
@@ -190,7 +240,9 @@ func Connect(parent context.Context, debuggerURL string) (*Session, error) {
 		ctxCancel()
 		allocCancel()
 	}
-	return &Session{ctx: ctx, cancel: cancel}, nil
+	sess.ctx = ctx
+	sess.cancel = cancel
+	return sess, nil
 }
 
 // isStaleTargetErr matches CDP errors raised when attaching to a target id that the
@@ -253,7 +305,9 @@ func (s *Session) PingBrowser() error {
 	if ex == nil {
 		return fmt.Errorf("browser not available in context")
 	}
-	_, _, _, _, _, err := browser.GetVersion().Do(cdp.WithExecutor(s.ctx, ex))
+	opCtx, cancel := s.opCtx(s.ctx)
+	defer cancel()
+	_, _, _, _, _, err := browser.GetVersion().Do(cdp.WithExecutor(opCtx, ex))
 	return err
 }
 
@@ -262,7 +316,9 @@ func (s *Session) PageTargets() ([]*target.Info, error) {
 	if s == nil {
 		return nil, fmt.Errorf("browser session is nil")
 	}
-	all, err := chromedp.Targets(s.ctx)
+	opCtx, cancel := s.opCtx(s.ctx)
+	defer cancel()
+	all, err := chromedp.Targets(opCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -303,7 +359,7 @@ func (s *Session) DetectForegroundShort(snaps []state.TabSnapshot) (string, bool
 			continue
 		}
 		var vis string
-		if err := chromedp.Run(tabCtx, chromedp.Evaluate(`document.visibilityState`, &vis)); err != nil {
+		if err := s.runTabOp(tabCtx, chromedp.Evaluate(`document.visibilityState`, &vis)); err != nil {
 			continue
 		}
 		if vis != "visible" {
@@ -356,7 +412,10 @@ func (s *Session) tabChromeCtx(tabID target.ID) (context.Context, error) {
 		return ent.ctx, nil
 	}
 	ctx, cancel := chromedp.NewContext(s.ctx, chromedp.WithTargetID(tabID))
-	if err := chromedp.Run(ctx); err != nil {
+	runCtx, runCancel := s.opCtx(ctx)
+	err := chromedp.Run(runCtx)
+	runCancel()
+	if err != nil {
 		s.poolMu.Unlock()
 		cancel()
 		return nil, err
@@ -380,7 +439,9 @@ func (s *Session) CreatePageTarget(initialURL string, silent bool) (target.ID, e
 	if silent {
 		params = params.WithBackground(true).WithFocus(false)
 	}
-	id, err := params.Do(cdp.WithExecutor(s.ctx, ex))
+	opCtx, cancel := s.opCtx(s.ctx)
+	defer cancel()
+	id, err := params.Do(cdp.WithExecutor(opCtx, ex))
 	if err != nil {
 		return "", err
 	}
@@ -407,7 +468,9 @@ func (s *Session) CloseTarget(id target.ID) error {
 	if ex == nil {
 		return fmt.Errorf("browser not available in context")
 	}
-	return target.CloseTarget(id).Do(cdp.WithExecutor(s.ctx, ex))
+	opCtx, cancel := s.opCtx(s.ctx)
+	defer cancel()
+	return target.CloseTarget(id).Do(cdp.WithExecutor(opCtx, ex))
 }
 
 // Navigate navigates the given page target to url.
@@ -419,7 +482,7 @@ func (s *Session) Navigate(tabID target.ID, url string) error {
 	if err != nil {
 		return err
 	}
-	return chromedp.Run(tabCtx, chromedp.Navigate(url))
+	return s.runTabOp(tabCtx, chromedp.Navigate(url))
 }
 
 // Reload performs a full navigation reload for the page target.
@@ -431,7 +494,7 @@ func (s *Session) Reload(tabID target.ID) error {
 	if err != nil {
 		return err
 	}
-	return chromedp.Run(tabCtx, chromedp.Reload())
+	return s.runTabOp(tabCtx, chromedp.Reload())
 }
 
 // Screenshot captures the viewport; format is "png" (default) or "jpeg".
@@ -446,7 +509,7 @@ func (s *Session) Screenshot(tabID target.ID, format string) ([]byte, string, er
 	format = strings.ToLower(strings.TrimSpace(format))
 	if format == "jpeg" || format == "jpg" {
 		var buf []byte
-		err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		err := s.runTabOp(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 			var err error
 			buf, err = page.CaptureScreenshot().
 				WithFormat(page.CaptureScreenshotFormatJpeg).
@@ -457,7 +520,7 @@ func (s *Session) Screenshot(tabID target.ID, format string) ([]byte, string, er
 		return buf, "image/jpeg", err
 	}
 	var buf []byte
-	err = chromedp.Run(tabCtx, chromedp.CaptureScreenshot(&buf))
+	err = s.runTabOp(tabCtx, chromedp.CaptureScreenshot(&buf))
 	return buf, "image/png", err
 }
 
@@ -478,7 +541,7 @@ func (s *Session) EvalAwait(tabID target.ID, script string, awaitPromise bool) (
 		return nil, err
 	}
 	var raw []byte
-	err = chromedp.Run(tabCtx, chromedp.Evaluate(script, &raw, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
+	err = s.runTabOp(tabCtx, chromedp.Evaluate(script, &raw, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
 		return p.WithAwaitPromise(awaitPromise).WithReturnByValue(true)
 	}))
 	if err != nil {
@@ -496,7 +559,7 @@ func (s *Session) Click(tabID target.ID, selector string) error {
 	if err != nil {
 		return err
 	}
-	return chromedp.Run(tabCtx, chromedp.Click(selector, chromedp.ByQuery))
+	return s.runTabOp(tabCtx, chromedp.Click(selector, chromedp.ByQuery))
 }
 
 // Fill sets the value of an input/textarea (see chromedp.SetValue).
@@ -508,5 +571,5 @@ func (s *Session) Fill(tabID target.ID, selector, text string) error {
 	if err != nil {
 		return err
 	}
-	return chromedp.Run(tabCtx, chromedp.SetValue(selector, text, chromedp.ByQuery))
+	return s.runTabOp(tabCtx, chromedp.SetValue(selector, text, chromedp.ByQuery))
 }

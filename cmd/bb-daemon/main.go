@@ -32,6 +32,7 @@ func run() int {
 	debuggerURL := flag.String("debugger-url", envOrDefault("BB_BROWSER_DEBUGGER_URL", ""), "Chrome DevTools endpoint (ws/http URL or host:port); required")
 	listen := flag.String("listen", envOrDefault("BB_BROWSER_LISTEN", daemon.DefaultListenAddr), "HTTP listen address for the daemon API")
 	tabIdleTimeout := flag.String("tab-idle-timeout", envOrDefault("BB_BROWSER_TAB_IDLE_TIMEOUT", "5m"), "close daemon-created tabs after this idle period (0 disables)")
+	cdpOpTimeout := flag.String("cdp-op-timeout", envOrDefault("BB_BROWSER_CDP_OP_TIMEOUT", "30s"), "per-operation CDP timeout (0 uses default 30s)")
 	stateDir := flag.String("state-dir", envOrDefault("BB_BROWSER_STATE_DIR", ""), "directory for persisted managed-tab state (default: ~/.local/state/bb-daemon)")
 	maxLogBytes := flag.Int64("rpc-log-max-bytes", envOrDefaultInt64("BB_BROWSER_RPC_LOG_MAX_BYTES", daemon.DefaultMaxLogBytes), "rotate rpc.jsonl once it exceeds this many bytes")
 	flag.Parse()
@@ -46,11 +47,17 @@ func run() int {
 		fmt.Fprintf(os.Stderr, "config: invalid tab-idle-timeout %q: %v\n", *tabIdleTimeout, err)
 		return 2
 	}
+	cdpTimeout, err := time.ParseDuration(*cdpOpTimeout)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config: invalid cdp-op-timeout %q: %v\n", *cdpOpTimeout, err)
+		return 2
+	}
 
 	cfg := daemon.Config{
 		DebuggerURL:    *debuggerURL,
 		ListenAddr:     *listen,
 		TabIdleTimeout: idleTimeout,
+		CDPOpTimeout:   cdpTimeout,
 		StateDir:       *stateDir,
 		MaxLogBytes:    *maxLogBytes,
 	}

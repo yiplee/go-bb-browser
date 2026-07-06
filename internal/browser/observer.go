@@ -171,7 +171,7 @@ func (s *Session) runTabObserver(parent context.Context, tid target.ID, rec ObsR
 		}
 	})
 
-	if err := chromedp.Run(tabCtx,
+	if err := s.runTabOp(tabCtx,
 		network.Enable(),
 		runtime.Enable(),
 		cdplog.Enable(),

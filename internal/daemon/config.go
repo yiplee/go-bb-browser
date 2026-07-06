@@ -35,6 +35,9 @@ type Config struct {
 
 	// MaxLogBytes rotates rpc.jsonl once it exceeds this size; <=0 uses DefaultMaxLogBytes.
 	MaxLogBytes int64
+
+	// CDPOpTimeout bounds each CDP operation; <=0 uses DefaultCDPOpTimeout.
+	CDPOpTimeout time.Duration
 }
 
 const (
@@ -43,6 +46,7 @@ const (
 	DefaultTabIdleTimeout   = 5 * time.Minute
 	DefaultIdleStartupGrace = 30 * time.Second
 	DefaultMaxLogBytes      = 8 << 20 // 8 MiB
+	DefaultCDPOpTimeout     = 30 * time.Second
 	defaultStateDirRel      = ".local/state/bb-daemon"
 )
 
@@ -81,6 +85,9 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxLogBytes <= 0 {
 		c.MaxLogBytes = DefaultMaxLogBytes
+	}
+	if c.CDPOpTimeout <= 0 {
+		c.CDPOpTimeout = DefaultCDPOpTimeout
 	}
 	if dir := strings.TrimSpace(c.StateDir); dir != "" && dir != stateDirDisabled {
 		c.StateDir = filepath.Clean(dir)

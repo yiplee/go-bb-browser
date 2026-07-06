@@ -1242,6 +1242,9 @@ func (s *Server) cdpHint(err error) string {
 	if err == nil {
 		return ""
 	}
+	if isReconnectableCDPErr(err) {
+		s.markBrowserSessionStale()
+	}
 	return err.Error()
 }
 
