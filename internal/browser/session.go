@@ -46,6 +46,8 @@ type Session struct {
 	ctx    context.Context
 	cancel context.CancelFunc // cancels chromedp context then allocator
 
+	debuggerBase string // http(s) DevTools base for lightweight CDP probes
+
 	opTimeout time.Duration
 	logger    *slog.Logger
 
@@ -205,7 +207,11 @@ func Connect(parent context.Context, debuggerURL string, opts ConnectOptions) (*
 	// So cancelling a timeout child after Connect returns tears the session down (symptom:
 	// later CDP ops return "context canceled" and the user's Chrome tab/window is closed).
 	// Bound hang risk with a watchdog that only fires on failure instead of a timeout child.
-	sess := &Session{opTimeout: opTimeout, logger: lg}
+	sess := &Session{
+		opTimeout:    opTimeout,
+		logger:       lg,
+		debuggerBase: httpDebuggerBase(debuggerURL),
+	}
 
 	firstRunTimeout := DefaultOpTimeout
 	if opTimeout > 0 {
@@ -362,21 +368,28 @@ func (s *Session) PageTargets() ([]*target.Info, error) {
 // DetectForegroundShort returns the short id of the unique page target whose
 // document.visibilityState is "visible". If zero or more than one target
 // qualifies (typical with multiple visible browser windows), it returns "", false.
-func (s *Session) DetectForegroundShort(snaps []state.TabSnapshot) (string, bool) {
+// ctx bounds total work (per-tab probes use foregroundProbeTimeout).
+func (s *Session) DetectForegroundShort(ctx context.Context, snaps []state.TabSnapshot) (string, bool) {
 	if s == nil || len(snaps) == 0 {
 		return "", false
 	}
+	var probe *wsProbe
+	defer func() {
+		if probe != nil {
+			probe.close()
+		}
+	}()
+
 	var picked string
 	for _, sn := range snaps {
+		if err := ctx.Err(); err != nil {
+			return "", false
+		}
 		if sn.TargetID == "" {
 			continue
 		}
-		tabCtx, err := s.tabChromeCtx(sn.TargetID)
+		vis, err := s.probeVisibilityState(ctx, sn.TargetID, &probe)
 		if err != nil {
-			continue
-		}
-		var vis string
-		if err := s.runTabOp(tabCtx, chromedp.Evaluate(`document.visibilityState`, &vis)); err != nil {
 			continue
 		}
 		if vis != "visible" {

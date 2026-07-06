@@ -230,7 +230,7 @@ func (s *Server) handleTabList(ctx context.Context, w http.ResponseWriter, id js
 	sort.Slice(snaps, func(i, j int) bool {
 		return snaps[i].ShortID < snaps[j].ShortID
 	})
-	s.syncRegistryFocusFromBrowser(conn, snaps)
+	s.syncRegistryFocusFromBrowser(ctx, conn, snaps)
 	items := make([]protocol.TabListItem, 0, len(snaps))
 	for _, sn := range snaps {
 		items = append(items, protocol.TabListItem{
@@ -288,7 +288,7 @@ func (s *Server) handleTabFocus(ctx context.Context, w http.ResponseWriter, id j
 	sort.Slice(snaps, func(i, j int) bool {
 		return snaps[i].ShortID < snaps[j].ShortID
 	})
-	s.syncRegistryFocusFromBrowser(conn, snaps)
+	s.syncRegistryFocusFromBrowser(ctx, conn, snaps)
 	focus := s.tabs.Selected()
 	tabField := operationalTabShort(s.tabs, snaps)
 	var title, url string
@@ -313,21 +313,26 @@ func (s *Server) handleTabFocus(ctx context.Context, w http.ResponseWriter, id j
 	s.syncObservation(conn, targets)
 }
 
+const foregroundSyncBudget = 5 * time.Second
+
 // syncRegistryFocusFromBrowser updates TabRegistry selection when the browser
 // has exactly one page with document.visibilityState === "visible" (typical
 // single-window foreground tab after the user switches tabs in Chrome).
-func (s *Server) syncRegistryFocusFromBrowser(conn tabConn, snaps []state.TabSnapshot) {
+// Best-effort: skips focus sync when the budget expires.
+func (s *Server) syncRegistryFocusFromBrowser(ctx context.Context, conn tabConn, snaps []state.TabSnapshot) {
 	if conn == nil || len(snaps) == 0 {
 		return
 	}
 	type foregroundDetector interface {
-		DetectForegroundShort(snaps []state.TabSnapshot) (short string, ok bool)
+		DetectForegroundShort(ctx context.Context, snaps []state.TabSnapshot) (short string, ok bool)
 	}
 	d, ok := conn.(foregroundDetector)
 	if !ok {
 		return
 	}
-	sh, ok := d.DetectForegroundShort(snaps)
+	syncCtx, cancel := context.WithTimeout(ctx, foregroundSyncBudget)
+	defer cancel()
+	sh, ok := d.DetectForegroundShort(syncCtx, snaps)
 	if !ok {
 		return
 	}

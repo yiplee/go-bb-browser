@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -108,7 +109,7 @@ func (f *fakeConn) RemoveNetworkRoutes(target.ID, string) error { return nil }
 
 func (f *fakeConn) NetworkRouteCount(target.ID) int { return 0 }
 
-func (f *fakeConn) DetectForegroundShort([]state.TabSnapshot) (string, bool) {
+func (f *fakeConn) DetectForegroundShort(context.Context, []state.TabSnapshot) (string, bool) {
 	return "", false
 }
 
