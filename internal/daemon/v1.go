@@ -230,7 +230,7 @@ func (s *Server) handleTabList(ctx context.Context, w http.ResponseWriter, id js
 	sort.Slice(snaps, func(i, j int) bool {
 		return snaps[i].ShortID < snaps[j].ShortID
 	})
-	s.syncRegistryFocusFromBrowser(ctx, conn, snaps)
+	s.syncRegistryFocusFromBrowser(conn, snaps)
 	items := make([]protocol.TabListItem, 0, len(snaps))
 	for _, sn := range snaps {
 		items = append(items, protocol.TabListItem{
@@ -288,7 +288,7 @@ func (s *Server) handleTabFocus(ctx context.Context, w http.ResponseWriter, id j
 	sort.Slice(snaps, func(i, j int) bool {
 		return snaps[i].ShortID < snaps[j].ShortID
 	})
-	s.syncRegistryFocusFromBrowser(ctx, conn, snaps)
+	s.syncRegistryFocusFromBrowser(conn, snaps)
 	focus := s.tabs.Selected()
 	tabField := operationalTabShort(s.tabs, snaps)
 	var title, url string
@@ -313,26 +313,21 @@ func (s *Server) handleTabFocus(ctx context.Context, w http.ResponseWriter, id j
 	s.syncObservation(conn, targets)
 }
 
-const foregroundSyncBudget = 5 * time.Second
-
 // syncRegistryFocusFromBrowser updates TabRegistry selection when the browser
 // has exactly one page with document.visibilityState === "visible" (typical
 // single-window foreground tab after the user switches tabs in Chrome).
-// Best-effort: skips focus sync when the budget expires.
-func (s *Server) syncRegistryFocusFromBrowser(ctx context.Context, conn tabConn, snaps []state.TabSnapshot) {
+func (s *Server) syncRegistryFocusFromBrowser(conn tabConn, snaps []state.TabSnapshot) {
 	if conn == nil || len(snaps) == 0 {
 		return
 	}
 	type foregroundDetector interface {
-		DetectForegroundShort(ctx context.Context, snaps []state.TabSnapshot) (short string, ok bool)
+		DetectForegroundShort(snaps []state.TabSnapshot) (short string, ok bool)
 	}
 	d, ok := conn.(foregroundDetector)
 	if !ok {
 		return
 	}
-	syncCtx, cancel := context.WithTimeout(ctx, foregroundSyncBudget)
-	defer cancel()
-	sh, ok := d.DetectForegroundShort(syncCtx, snaps)
+	sh, ok := d.DetectForegroundShort(snaps)
 	if !ok {
 		return
 	}
@@ -1246,9 +1241,6 @@ func (s *Server) resolveTab(conn tabConn, tab string) (target.ID, bool) {
 func (s *Server) cdpHint(err error) string {
 	if err == nil {
 		return ""
-	}
-	if isReconnectableCDPErr(err) {
-		s.markBrowserSessionStale()
 	}
 	return err.Error()
 }

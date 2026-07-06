@@ -50,9 +50,6 @@ func TestConfigValidate_DefaultListenAndBodyLimit(t *testing.T) {
 	if c.MaxLogBytes != DefaultMaxLogBytes {
 		t.Fatalf("max log bytes: got %d want %d", c.MaxLogBytes, DefaultMaxLogBytes)
 	}
-	if c.CDPOpTimeout != DefaultCDPOpTimeout {
-		t.Fatalf("cdp op timeout: got %v want %v", c.CDPOpTimeout, DefaultCDPOpTimeout)
-	}
 }
 
 func TestValidateDebuggerEndpoint(t *testing.T) {
