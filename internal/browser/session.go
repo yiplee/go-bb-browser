@@ -199,10 +199,18 @@ func Connect(parent context.Context, debuggerURL string, opts ConnectOptions) (*
 	allocCtx, allocCancel := chromedp.NewRemoteAllocator(context.WithoutCancel(parent), base)
 
 	// First Run must use the long-lived chromedp ctx, not a child WithTimeout:
-	// RemoteAllocator starts a goroutine on Allocate that waits on Run's ctx.Done()
-	// then calls chromedp.Cancel — cancelling a timeout child after Connect returns
-	// would tear down the browser session (symptom: later CDP ops return "context canceled").
+	// RemoteAllocator ties the whole browser session's lifetime to the context passed
+	// to the first Run — its Allocate goroutine waits on that ctx.Done() then calls
+	// chromedp.Cancel → Target.closeTarget on the attached tab and closes the websocket.
+	// So cancelling a timeout child after Connect returns tears the session down (symptom:
+	// later CDP ops return "context canceled" and the user's Chrome tab/window is closed).
+	// Bound hang risk with a watchdog that only fires on failure instead of a timeout child.
 	sess := &Session{opTimeout: opTimeout, logger: lg}
+
+	firstRunTimeout := DefaultOpTimeout
+	if opTimeout > 0 {
+		firstRunTimeout = opTimeout
+	}
 
 	tryRun := func(targetID target.ID) (context.Context, context.CancelFunc, error) {
 		var c context.Context
@@ -214,14 +222,23 @@ func Connect(parent context.Context, debuggerURL string, opts ConnectOptions) (*
 		} else {
 			c, cancel = chromedp.NewContext(allocCtx, browserCtxOpts...)
 		}
-		runCtx, runCancel := sess.opCtx(c)
-		err := chromedp.Run(runCtx)
-		runCancel()
-		if err != nil {
-			cancel()
-			return nil, nil, err
+		done := make(chan error, 1)
+		go func() { done <- chromedp.Run(c) }()
+		timer := time.NewTimer(firstRunTimeout)
+		defer timer.Stop()
+		select {
+		case err := <-done:
+			if err != nil {
+				cancel()
+				return nil, nil, err
+			}
+			return c, cancel, nil
+		case <-timer.C:
+			// Tear the wedged half-open session down off the hot path: cancel's cancelWait
+			// can block on an allocator that never signalled, so don't stall Connect on it.
+			go cancel()
+			return nil, nil, fmt.Errorf("cdp first run timed out after %s", firstRunTimeout)
 		}
-		return c, cancel, nil
 	}
 
 	ctx, ctxCancel, err := tryRun(attachID)
