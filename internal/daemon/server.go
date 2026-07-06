@@ -45,6 +45,11 @@ type Server struct {
 	// auditWG tracks in-flight async audit writes so they are drained before the store closes.
 	auditWG sync.WaitGroup
 
+	// CDP loss triggers fatal exit (supervisor restart) instead of in-process reconnect.
+	fatalOnce sync.Once
+	fatalCh   chan error
+	stopRun   context.CancelFunc
+
 	// SkipBrowserAttach skips CDP connect in ListenAndServe (tests without Chrome).
 	SkipBrowserAttach bool
 }
@@ -136,6 +141,10 @@ func (s *Server) handleHealthGet(w http.ResponseWriter, r *http.Request) {
 
 // ListenAndServe starts the HTTP server until ctx is cancelled or Listen fails.
 func (s *Server) ListenAndServe(ctx context.Context) error {
+	runCtx, stopRun := context.WithCancel(ctx)
+	s.stopRun = stopRun
+	s.fatalCh = make(chan error, 1)
+
 	defer func() {
 		if s.store != nil {
 			s.auditWG.Wait() // drain async audit writes before closing the store
@@ -145,7 +154,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 
 	if !s.SkipBrowserAttach && s.tabHook == nil {
 		s.tabMu.Lock()
-		if err := s.connectBrowserLocked(ctx); err != nil {
+		if err := s.connectBrowserLocked(runCtx); err != nil {
 			s.tabMu.Unlock()
 			return fmt.Errorf("cdp attach: %w", err)
 		}
@@ -186,7 +195,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	}()
 
 	if s.cfg.TabIdleTimeout > 0 {
-		go s.runTabIdleSweeper(ctx)
+		go s.runTabIdleSweeper(runCtx)
 	}
 
 	select {
@@ -198,6 +207,12 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		}
 		<-errCh
 		return nil
+	case err := <-s.fatalCh:
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+		<-errCh
+		return err
 	case err := <-errCh:
 		return err
 	}

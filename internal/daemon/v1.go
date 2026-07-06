@@ -1242,6 +1242,9 @@ func (s *Server) cdpHint(err error) string {
 	if err == nil {
 		return ""
 	}
+	if isCDPSessionLost(err) {
+		s.fatalCDPLost(err)
+	}
 	return err.Error()
 }
 
