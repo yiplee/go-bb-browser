@@ -83,7 +83,7 @@ func (s *Session) FetchPage(tabID target.ID, rawURL, method string, headersJSON 
 })()`, string(rawQ), string(methQ), string(h), string(bodyQ))
 
 	var raw []byte
-	err = chromedp.Run(tabCtx, chromedp.Evaluate(expr, &raw, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
+	err = runCDP(tabCtx, chromedp.Evaluate(expr, &raw, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
 		return p.WithAwaitPromise(true).WithReturnByValue(true)
 	}))
 	if err != nil {

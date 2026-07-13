@@ -120,7 +120,7 @@ func (s *Session) syncFetchEnableLocked(rs *routeState, tabID target.ID) error {
 	rules := rs.rules[tabID]
 	if len(rules) == 0 {
 		delete(rs.listenerRegistered, tabID)
-		return chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		return runCDP(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 			return fetch.Disable().Do(ctx)
 		}))
 	}
@@ -133,7 +133,7 @@ func (s *Session) syncFetchEnableLocked(rs *routeState, tabID target.ID) error {
 				return
 			}
 			if e.ResponseStatusCode != 0 || e.ResponseErrorReason != "" {
-				_ = chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+				_ = runCDP(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 					return fetch.ContinueRequest(e.RequestID).Do(ctx)
 				}))
 				return
@@ -152,13 +152,13 @@ func (s *Session) syncFetchEnableLocked(rs *routeState, tabID target.ID) error {
 				}
 			}
 			if matched == nil {
-				_ = chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+				_ = runCDP(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 					return fetch.ContinueRequest(e.RequestID).Do(ctx)
 				}))
 				return
 			}
 			if matched.Abort {
-				_ = chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+				_ = runCDP(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 					return fetch.FailRequest(e.RequestID, network.ErrorReasonBlockedByClient).Do(ctx)
 				}))
 				return
@@ -174,7 +174,7 @@ func (s *Session) syncFetchEnableLocked(rs *routeState, tabID target.ID) error {
 			}
 			b64 := base64.StdEncoding.EncodeToString([]byte(body))
 			headers := []*fetch.HeaderEntry{{Name: "Content-Type", Value: ct}}
-			_ = chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+			_ = runCDP(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 				return fetch.FulfillRequest(e.RequestID, int64(st)).
 					WithResponseHeaders(headers).
 					WithBody(b64).
@@ -194,7 +194,7 @@ func (s *Session) syncFetchEnableLocked(rs *routeState, tabID target.ID) error {
 	if len(patterns) == 0 {
 		return nil
 	}
-	return chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+	return runCDP(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		return fetch.Enable().WithPatterns(patterns).Do(ctx)
 	}))
 }

@@ -94,7 +94,10 @@ func (s *Server) closeTabByShort(tab string) error {
 	if conn == nil {
 		return errTabCloseNoConn
 	}
-	unlock := s.lockTab(tab)
+	unlock, ok := s.lockTab(context.Background(), tab)
+	if !ok {
+		return context.DeadlineExceeded
+	}
 	defer unlock()
 
 	tid, ok := s.tabs.Lookup(tab)

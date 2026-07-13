@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/chromedp/cdproto/target"
@@ -77,6 +76,8 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	ctx, cancel := context.WithTimeout(ctx, defaultOperationTimeout)
+	defer cancel()
 
 	ctx = contextWithAudit(ctx, &auditMeta{
 		action:   method,
@@ -467,7 +468,11 @@ func (s *Server) handleGoto(ctx context.Context, w http.ResponseWriter, id json.
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "browser session not ready", nil)
 		return
 	}
-	unlock := s.lockTab(tab)
+	unlock, ok := s.lockTab(ctx, tab)
+	if !ok {
+		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", nil)
+		return
+	}
 	defer unlock()
 	tid, ok := s.resolveTab(conn, tab)
 	if !ok {
@@ -513,7 +518,11 @@ func (s *Server) handleReload(ctx context.Context, w http.ResponseWriter, id jso
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "browser session not ready", nil)
 		return
 	}
-	unlock := s.lockTab(tab)
+	unlock, ok := s.lockTab(ctx, tab)
+	if !ok {
+		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", nil)
+		return
+	}
 	defer unlock()
 	tid, ok := s.resolveTab(conn, tab)
 	if !ok {
@@ -604,7 +613,11 @@ func (s *Server) handleScreenshot(ctx context.Context, w http.ResponseWriter, id
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "browser session not ready", nil)
 		return
 	}
-	unlock := s.lockTab(tab)
+	unlock, ok := s.lockTab(ctx, tab)
+	if !ok {
+		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", nil)
+		return
+	}
 	defer unlock()
 	tid, ok := s.resolveTab(conn, tab)
 	if !ok {
@@ -663,7 +676,11 @@ func (s *Server) handleEval(ctx context.Context, w http.ResponseWriter, id json.
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "browser session not ready", nil)
 		return
 	}
-	unlock := s.lockTab(tab)
+	unlock, ok := s.lockTab(ctx, tab)
+	if !ok {
+		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", nil)
+		return
+	}
 	defer unlock()
 	tid, ok := s.resolveTab(conn, tab)
 	if !ok {
@@ -722,7 +739,11 @@ func (s *Server) handleClick(ctx context.Context, w http.ResponseWriter, id json
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "browser session not ready", nil)
 		return
 	}
-	unlock := s.lockTab(tab)
+	unlock, ok := s.lockTab(ctx, tab)
+	if !ok {
+		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", nil)
+		return
+	}
 	defer unlock()
 	tid, ok := s.resolveTab(conn, tab)
 	if !ok {
@@ -806,7 +827,11 @@ func (s *Server) handleObsQuery(ctx context.Context, w http.ResponseWriter, id j
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "browser session not ready", nil)
 		return
 	}
-	unlock := s.lockTab(tab)
+	unlock, ok := s.lockTab(ctx, tab)
+	if !ok {
+		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", nil)
+		return
+	}
 	defer unlock()
 	tid, ok := s.resolveTab(conn, tab)
 	if !ok {
@@ -859,7 +884,11 @@ func (s *Server) handleFetch(ctx context.Context, w http.ResponseWriter, id json
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "browser session not ready", nil)
 		return
 	}
-	unlock := s.lockTab(tab)
+	unlock, ok := s.lockTab(ctx, tab)
+	if !ok {
+		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", nil)
+		return
+	}
 	defer unlock()
 	tid, ok := s.resolveTab(conn, tab)
 	if !ok {
@@ -924,7 +953,11 @@ func (s *Server) handleSnapshot(ctx context.Context, w http.ResponseWriter, id j
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "browser session not ready", nil)
 		return
 	}
-	unlock := s.lockTab(tab)
+	unlock, ok := s.lockTab(ctx, tab)
+	if !ok {
+		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", nil)
+		return
+	}
 	defer unlock()
 	tid, ok := s.resolveTab(conn, tab)
 	if !ok {
@@ -987,7 +1020,11 @@ func (s *Server) handleNetworkRoute(ctx context.Context, w http.ResponseWriter, 
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "browser session not ready", nil)
 		return
 	}
-	unlock := s.lockTab(tab)
+	unlock, ok := s.lockTab(ctx, tab)
+	if !ok {
+		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", nil)
+		return
+	}
 	defer unlock()
 	tid, ok := s.resolveTab(conn, tab)
 	if !ok {
@@ -1038,7 +1075,11 @@ func (s *Server) handleNetworkUnroute(ctx context.Context, w http.ResponseWriter
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "browser session not ready", nil)
 		return
 	}
-	unlock := s.lockTab(tab)
+	unlock, ok := s.lockTab(ctx, tab)
+	if !ok {
+		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", nil)
+		return
+	}
 	defer unlock()
 	tid, ok := s.resolveTab(conn, tab)
 	if !ok {
@@ -1081,7 +1122,11 @@ func (s *Server) handleConsoleClear(ctx context.Context, w http.ResponseWriter, 
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "browser session not ready", nil)
 		return
 	}
-	unlock := s.lockTab(tab)
+	unlock, ok := s.lockTab(ctx, tab)
+	if !ok {
+		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", nil)
+		return
+	}
 	defer unlock()
 	tid, ok := s.resolveTab(conn, tab)
 	if !ok {
@@ -1114,7 +1159,11 @@ func (s *Server) handleErrorsClear(ctx context.Context, w http.ResponseWriter, i
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "browser session not ready", nil)
 		return
 	}
-	unlock := s.lockTab(tab)
+	unlock, ok := s.lockTab(ctx, tab)
+	if !ok {
+		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", nil)
+		return
+	}
 	defer unlock()
 	tid, ok := s.resolveTab(conn, tab)
 	if !ok {
@@ -1147,7 +1196,11 @@ func (s *Server) handleNetworkClear(ctx context.Context, w http.ResponseWriter, 
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "browser session not ready", nil)
 		return
 	}
-	unlock := s.lockTab(tab)
+	unlock, ok := s.lockTab(ctx, tab)
+	if !ok {
+		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", nil)
+		return
+	}
 	defer unlock()
 	tid, ok := s.resolveTab(conn, tab)
 	if !ok {
@@ -1196,7 +1249,11 @@ func (s *Server) handleFill(ctx context.Context, w http.ResponseWriter, id json.
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "browser session not ready", nil)
 		return
 	}
-	unlock := s.lockTab(tab)
+	unlock, ok := s.lockTab(ctx, tab)
+	if !ok {
+		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", nil)
+		return
+	}
 	defer unlock()
 	tid, ok := s.resolveTab(conn, tab)
 	if !ok {
@@ -1276,20 +1333,25 @@ type routeConn interface {
 }
 
 // lockTab serializes CDP operations per short tab id (IMPLEMENTATION_PLAN §8.2).
-func (s *Server) lockTab(short string) func() {
+func (s *Server) lockTab(ctx context.Context, short string) (func(), bool) {
 	if short == "" {
-		return func() {}
+		return func() {}, true
 	}
 	s.tabMuOps.Lock()
 	if s.tabCDPLocks == nil {
-		s.tabCDPLocks = make(map[string]*sync.Mutex)
+		s.tabCDPLocks = make(map[string]chan struct{})
 	}
 	m, ok := s.tabCDPLocks[short]
 	if !ok {
-		m = &sync.Mutex{}
+		m = make(chan struct{}, 1)
+		m <- struct{}{}
 		s.tabCDPLocks[short] = m
 	}
 	s.tabMuOps.Unlock()
-	m.Lock()
-	return m.Unlock
+	select {
+	case <-m:
+		return func() { m <- struct{}{} }, true
+	case <-ctx.Done():
+		return func() {}, false
+	}
 }

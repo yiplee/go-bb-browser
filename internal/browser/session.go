@@ -54,6 +54,14 @@ type tabPoolEntry struct {
 	cancel context.CancelFunc
 }
 
+const defaultCDPOperationTimeout = 60 * time.Second
+
+func runCDP(ctx context.Context, actions ...chromedp.Action) error {
+	opCtx, cancel := context.WithTimeout(ctx, defaultCDPOperationTimeout)
+	defer cancel()
+	return chromedp.Run(opCtx, actions...)
+}
+
 // remoteAllocatorURL adapts debugger endpoints for chromedp.NewRemoteAllocator, which
 // only accepts ws(s):// or http(s):// (bare host:port is not a valid URL for json/version).
 func remoteAllocatorURL(debuggerURL string) string {
@@ -246,23 +254,43 @@ func (s *Session) Close() {
 
 // PingBrowser checks CDP connectivity with a lightweight Browser.getVersion call.
 func (s *Session) PingBrowser() error {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultCDPOperationTimeout)
+	defer cancel()
+	return s.PingBrowserContext(ctx)
+}
+
+// PingBrowserContext checks CDP connectivity and honors the caller's deadline.
+func (s *Session) PingBrowserContext(ctx context.Context) error {
 	if s == nil {
 		return errNilSession()
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	ex := browserExecutor(s.ctx)
 	if ex == nil {
 		return fmt.Errorf("browser not available in context")
 	}
-	_, _, _, _, _, err := browser.GetVersion().Do(cdp.WithExecutor(s.ctx, ex))
+	_, _, _, _, _, err := browser.GetVersion().Do(cdp.WithExecutor(ctx, ex))
 	return err
 }
 
 // PageTargets returns Target API targets filtered to page-like tabs.
 func (s *Session) PageTargets() ([]*target.Info, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultCDPOperationTimeout)
+	defer cancel()
+	return s.PageTargetsContext(ctx)
+}
+
+// PageTargetsContext lists page targets and honors the caller's deadline.
+func (s *Session) PageTargetsContext(ctx context.Context) ([]*target.Info, error) {
 	if s == nil {
 		return nil, fmt.Errorf("browser session is nil")
 	}
-	all, err := chromedp.Targets(s.ctx)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	all, err := chromedp.Targets(cdp.WithExecutor(ctx, browserExecutor(s.ctx)))
 	if err != nil {
 		return nil, err
 	}
@@ -303,7 +331,7 @@ func (s *Session) DetectForegroundShort(snaps []state.TabSnapshot) (string, bool
 			continue
 		}
 		var vis string
-		if err := chromedp.Run(tabCtx, chromedp.Evaluate(`document.visibilityState`, &vis)); err != nil {
+		if err := runCDP(tabCtx, chromedp.Evaluate(`document.visibilityState`, &vis)); err != nil {
 			continue
 		}
 		if vis != "visible" {
@@ -356,7 +384,7 @@ func (s *Session) tabChromeCtx(tabID target.ID) (context.Context, error) {
 		return ent.ctx, nil
 	}
 	ctx, cancel := chromedp.NewContext(s.ctx, chromedp.WithTargetID(tabID))
-	if err := chromedp.Run(ctx); err != nil {
+	if err := runCDP(ctx); err != nil {
 		s.poolMu.Unlock()
 		cancel()
 		return nil, err
@@ -380,7 +408,9 @@ func (s *Session) CreatePageTarget(initialURL string, silent bool) (target.ID, e
 	if silent {
 		params = params.WithBackground(true).WithFocus(false)
 	}
-	id, err := params.Do(cdp.WithExecutor(s.ctx, ex))
+	opCtx, cancel := context.WithTimeout(s.ctx, defaultCDPOperationTimeout)
+	defer cancel()
+	id, err := params.Do(cdp.WithExecutor(opCtx, ex))
 	if err != nil {
 		return "", err
 	}
@@ -407,7 +437,9 @@ func (s *Session) CloseTarget(id target.ID) error {
 	if ex == nil {
 		return fmt.Errorf("browser not available in context")
 	}
-	return target.CloseTarget(id).Do(cdp.WithExecutor(s.ctx, ex))
+	opCtx, cancel := context.WithTimeout(s.ctx, defaultCDPOperationTimeout)
+	defer cancel()
+	return target.CloseTarget(id).Do(cdp.WithExecutor(opCtx, ex))
 }
 
 // Navigate navigates the given page target to url.
@@ -419,7 +451,7 @@ func (s *Session) Navigate(tabID target.ID, url string) error {
 	if err != nil {
 		return err
 	}
-	return chromedp.Run(tabCtx, chromedp.Navigate(url))
+	return runCDP(tabCtx, chromedp.Navigate(url))
 }
 
 // Reload performs a full navigation reload for the page target.
@@ -431,7 +463,7 @@ func (s *Session) Reload(tabID target.ID) error {
 	if err != nil {
 		return err
 	}
-	return chromedp.Run(tabCtx, chromedp.Reload())
+	return runCDP(tabCtx, chromedp.Reload())
 }
 
 // Screenshot captures the viewport; format is "png" (default) or "jpeg".
@@ -446,7 +478,7 @@ func (s *Session) Screenshot(tabID target.ID, format string) ([]byte, string, er
 	format = strings.ToLower(strings.TrimSpace(format))
 	if format == "jpeg" || format == "jpg" {
 		var buf []byte
-		err := chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		err := runCDP(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 			var err error
 			buf, err = page.CaptureScreenshot().
 				WithFormat(page.CaptureScreenshotFormatJpeg).
@@ -457,7 +489,7 @@ func (s *Session) Screenshot(tabID target.ID, format string) ([]byte, string, er
 		return buf, "image/jpeg", err
 	}
 	var buf []byte
-	err = chromedp.Run(tabCtx, chromedp.CaptureScreenshot(&buf))
+	err = runCDP(tabCtx, chromedp.CaptureScreenshot(&buf))
 	return buf, "image/png", err
 }
 
@@ -478,7 +510,7 @@ func (s *Session) EvalAwait(tabID target.ID, script string, awaitPromise bool) (
 		return nil, err
 	}
 	var raw []byte
-	err = chromedp.Run(tabCtx, chromedp.Evaluate(script, &raw, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
+	err = runCDP(tabCtx, chromedp.Evaluate(script, &raw, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
 		return p.WithAwaitPromise(awaitPromise).WithReturnByValue(true)
 	}))
 	if err != nil {
@@ -496,7 +528,7 @@ func (s *Session) Click(tabID target.ID, selector string) error {
 	if err != nil {
 		return err
 	}
-	return chromedp.Run(tabCtx, chromedp.Click(selector, chromedp.ByQuery))
+	return runCDP(tabCtx, chromedp.Click(selector, chromedp.ByQuery))
 }
 
 // Fill sets the value of an input/textarea (see chromedp.SetValue).
@@ -508,5 +540,5 @@ func (s *Session) Fill(tabID target.ID, selector, text string) error {
 	if err != nil {
 		return err
 	}
-	return chromedp.Run(tabCtx, chromedp.SetValue(selector, text, chromedp.ByQuery))
+	return runCDP(tabCtx, chromedp.SetValue(selector, text, chromedp.ByQuery))
 }

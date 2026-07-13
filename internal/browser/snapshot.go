@@ -153,7 +153,7 @@ func (s *Session) Snapshot(tabID target.ID, opts SnapshotOpts) (title, url, text
 	expr := fmt.Sprintf(snapshotStub, string(optJSON))
 
 	var raw []byte
-	err = chromedp.Run(tabCtx, chromedp.Evaluate(expr, &raw))
+	err = runCDP(tabCtx, chromedp.Evaluate(expr, &raw))
 	if err != nil {
 		return "", "", "", nil, err
 	}
