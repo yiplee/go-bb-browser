@@ -132,7 +132,9 @@ func (s *Server) ensureBrowserSession(ctx context.Context) error {
 	if time.Since(lastOK) < browserHealthProbeMinInterval {
 		return nil
 	}
-	_, err := bs.PageTargets()
+	probeCtx, cancel := context.WithTimeout(ctx, browserHealthTimeout)
+	defer cancel()
+	_, err := bs.PageTargetsContext(probeCtx)
 	if err == nil {
 		s.markBrowserOK()
 		return nil

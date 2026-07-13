@@ -40,7 +40,7 @@ type Server struct {
 	tabIdle  *state.TabIdleTracker
 
 	tabMuOps    sync.Mutex
-	tabCDPLocks map[string]*sync.Mutex // per short tab id
+	tabCDPLocks map[string]chan struct{} // per short tab id; one token means unlocked
 
 	// auditWG tracks in-flight async audit writes so they are drained before the store closes.
 	auditWG sync.WaitGroup
@@ -121,7 +121,9 @@ func (s *Server) handleHealthRoute(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHealthGet(w http.ResponseWriter, r *http.Request) {
-	result := s.healthResult(r.Context())
+	ctx, cancel := context.WithTimeout(r.Context(), browserHealthTimeout)
+	defer cancel()
+	result := s.healthResult(ctx)
 	b, err := json.Marshal(result)
 	if err != nil {
 		s.logger.Error("health json encode failed", "err", err)

@@ -2,11 +2,13 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/chromedp/cdproto/target"
 	"github.com/yiplee/go-bb-browser/internal/browser"
@@ -126,6 +128,25 @@ func rpcReq(method string, params any, id any) string {
 		panic(err)
 	}
 	return string(b)
+}
+
+func TestLockTabHonorsContextDeadline(t *testing.T) {
+	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0", StateDir: stateDirDisabled}
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock, ok := srv.lockTab(context.Background(), "tab")
+	if !ok {
+		t.Fatal("initial lock failed")
+	}
+	defer unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if _, ok := srv.lockTab(ctx, "tab"); ok {
+		t.Fatal("lock acquired after context deadline")
+	}
 }
 
 func TestV1TabListWithoutTabParam(t *testing.T) {
