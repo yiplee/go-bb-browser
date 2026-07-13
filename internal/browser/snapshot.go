@@ -139,7 +139,7 @@ func (s *Session) SnapshotContext(ctx context.Context, tabID target.ID, opts Sna
 	if s == nil {
 		return "", "", "", nil, errNilSession()
 	}
-	tabCtx, err := s.tabChromeCtx(tabID)
+	tabCtx, err := s.tabChromeCtxContext(ctx, tabID)
 	if err != nil {
 		return "", "", "", nil, err
 	}

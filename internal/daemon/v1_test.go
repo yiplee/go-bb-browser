@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,9 +25,14 @@ type fakeConn struct {
 	createErr   error
 	closeErr    error
 	navigateErr error
+	pageCalls   atomic.Int64
+	pingCalls   atomic.Int64
+	evalCalls   atomic.Int64
+	focusCalls  atomic.Int64
 }
 
 func (f *fakeConn) PageTargets() ([]*target.Info, error) {
+	f.pageCalls.Add(1)
 	if f.pageErr != nil {
 		return nil, f.pageErr
 	}
@@ -34,6 +40,7 @@ func (f *fakeConn) PageTargets() ([]*target.Info, error) {
 }
 
 func (f *fakeConn) PingBrowser() error {
+	f.pingCalls.Add(1)
 	if f.pageErr != nil {
 		return f.pageErr
 	}
@@ -85,6 +92,7 @@ func (f *fakeConn) Screenshot(target.ID, string) ([]byte, string, error) {
 }
 
 func (f *fakeConn) Eval(target.ID, string) (json.RawMessage, error) {
+	f.evalCalls.Add(1)
 	return json.RawMessage(`null`), nil
 }
 
@@ -111,6 +119,7 @@ func (f *fakeConn) RemoveNetworkRoutes(target.ID, string) error { return nil }
 func (f *fakeConn) NetworkRouteCount(target.ID) int { return 0 }
 
 func (f *fakeConn) DetectForegroundShort([]state.TabSnapshot) (string, bool) {
+	f.focusCalls.Add(1)
 	return "", false
 }
 
@@ -187,6 +196,54 @@ func TestV1TabListWithoutTabParam(t *testing.T) {
 	}
 	if len(env.Result.Tabs) != 1 || env.Result.Tabs[0].Tab != "3456" {
 		t.Fatalf("tabs %#v", env.Result.Tabs)
+	}
+}
+
+func TestV1TabListUsesOneBrowserEnumerationOnly(t *testing.T) {
+	for _, count := range []int{1, 10, 100} {
+		t.Run(fmt.Sprintf("targets_%d", count), func(t *testing.T) {
+			infos := make([]*target.Info, 0, count)
+			for i := range count {
+				infos = append(infos, &target.Info{TargetID: target.ID(fmt.Sprintf("ABCDEF%08d", i)), Type: "page"})
+			}
+			cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0", StateDir: stateDirDisabled}
+			if err := cfg.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			srv, err := NewServer(cfg, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fc := &fakeConn{infos: infos}
+			srv.tabHook = fc
+			postRPC(t, srv, rpcReq(protocol.MethodTabList, map[string]any{}, 1))
+			if got := fc.pageCalls.Load(); got != 1 {
+				t.Fatalf("GetTargets calls = %d, want 1", got)
+			}
+			if got := fc.focusCalls.Load(); got != 0 {
+				t.Fatalf("focus probes = %d, want 0", got)
+			}
+			if got := fc.evalCalls.Load(); got != 0 {
+				t.Fatalf("eval calls = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestV1TabNewWithZeroTabsDoesNotEnumerate(t *testing.T) {
+	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0", StateDir: stateDirDisabled}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fc := &fakeConn{}
+	srv.tabHook = fc
+	postRPC(t, srv, rpcReq(protocol.MethodTabNew, map[string]any{}, 1))
+	if got := fc.pageCalls.Load(); got != 0 {
+		t.Fatalf("GetTargets calls = %d, want 0", got)
 	}
 }
 

@@ -20,7 +20,7 @@ func (s *Session) FetchPageContext(ctx context.Context, tabID target.ID, rawURL,
 	if s == nil {
 		return nil, errNilSession()
 	}
-	tabCtx, err := s.tabChromeCtx(tabID)
+	tabCtx, err := s.tabChromeCtxContext(ctx, tabID)
 	if err != nil {
 		return nil, err
 	}

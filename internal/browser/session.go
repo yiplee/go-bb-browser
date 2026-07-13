@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/chromedp/cdproto/browser"
@@ -41,18 +42,29 @@ type Session struct {
 	routeState *routeState
 
 	obsMu     sync.Mutex
-	observers map[target.ID]context.CancelFunc // per-page CDP listener lifetimes
+	observers map[target.ID]*tabObserver
 
 	// tabPool holds one chromedp child context per page/tab target. Cancelling that child
 	// (as chromedp.NewContext's cancel does) runs CloseTarget — so we must NOT defer-cancel
-	// after each Navigate/Screenshot/etc. Reuse until pruneTabPool or CloseTarget drops it.
+	// after each operation. The daemon coordinator drops it only after authoritative removal.
 	poolMu  sync.Mutex
 	tabPool map[target.ID]*tabPoolEntry
+
+	targetEvents chan TargetEvent
+	targetDirty  atomic.Bool
+}
+
+// TargetEvent is the small, non-blocking lifecycle stream consumed by daemon state.
+type TargetEvent struct {
+	Info      *target.Info
+	Destroyed target.ID
 }
 
 type tabPoolEntry struct {
 	ctx    context.Context
 	cancel context.CancelFunc
+	ready  chan struct{}
+	err    error
 }
 
 func runCDP(ctx context.Context, actions ...chromedp.Action) error {
@@ -208,7 +220,54 @@ func Connect(parent context.Context, debuggerURL string) (*Session, error) {
 		ctxCancel()
 		allocCancel()
 	}
-	return &Session{ctx: ctx, cancel: cancel}, nil
+	s := &Session{ctx: ctx, cancel: cancel, targetEvents: make(chan TargetEvent, 256)}
+	s.listenTargetEvents()
+	return s, nil
+}
+
+func (s *Session) listenTargetEvents() {
+	if s == nil {
+		return
+	}
+	chromedp.ListenBrowser(s.ctx, func(ev any) {
+		var out TargetEvent
+		switch e := ev.(type) {
+		case *target.EventTargetCreated:
+			out.Info = e.TargetInfo
+		case *target.EventTargetInfoChanged:
+			out.Info = e.TargetInfo
+		case *target.EventTargetDestroyed:
+			out.Destroyed = e.TargetID
+		default:
+			return
+		}
+		s.enqueueTargetEvent(out)
+	})
+}
+
+func (s *Session) enqueueTargetEvent(event TargetEvent) {
+	select {
+	case s.targetEvents <- event:
+	default:
+		s.targetDirty.Store(true)
+	}
+}
+
+func (s *Session) TargetEvents() <-chan TargetEvent {
+	if s == nil {
+		return nil
+	}
+	return s.targetEvents
+}
+
+func (s *Session) ConsumeTargetDirty() bool {
+	return s != nil && s.targetDirty.Swap(false)
+}
+
+func (s *Session) MarkTargetDirty() {
+	if s != nil {
+		s.targetDirty.Store(true)
+	}
 }
 
 // isStaleTargetErr matches CDP errors raised when attaching to a target id that the
@@ -262,6 +321,33 @@ func (s *Session) Close() {
 	}
 }
 
+// ForgetTarget drops daemon-owned resources after Chrome has already removed a target.
+// Cancelling a live chromedp child closes its tab, so this must only be called from an
+// authoritative target-removal path.
+func (s *Session) ForgetTarget(id target.ID) {
+	if s == nil || id == "" {
+		return
+	}
+	var cancel context.CancelFunc
+	s.poolMu.Lock()
+	if ent := s.tabPool[id]; ent != nil {
+		delete(s.tabPool, id)
+		cancel = ent.cancel
+	}
+	s.poolMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	s.obsMu.Lock()
+	obs := s.observers[id]
+	delete(s.observers, id)
+	s.obsMu.Unlock()
+	if obs != nil && obs.cancel != nil {
+		obs.cancel()
+	}
+	s.ClearRoutesForTarget(id)
+}
+
 // PingBrowser checks CDP connectivity with a lightweight Browser.getVersion call.
 func (s *Session) PingBrowser() error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout.Operation)
@@ -300,9 +386,17 @@ func (s *Session) PageTargetsContext(ctx context.Context) ([]*target.Info, error
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	all, err := chromedp.Targets(cdp.WithExecutor(ctx, browserExecutor(s.ctx)))
+	ex := browserExecutor(s.ctx)
+	if ex == nil {
+		return nil, fmt.Errorf("browser not available in context")
+	}
+	return pageTargetsWithExecutor(ctx, ex)
+}
+
+func pageTargetsWithExecutor(ctx context.Context, ex cdp.Executor) ([]*target.Info, error) {
+	all, err := target.GetTargets().Do(cdp.WithExecutor(ctx, ex))
 	if err != nil {
-		return nil, err
+		return nil, wrapCDPError("Target.getTargets", "", err)
 	}
 	var pages []*target.Info
 	for _, info := range all {
@@ -316,11 +410,6 @@ func (s *Session) PageTargetsContext(ctx context.Context) ([]*target.Info, error
 			continue
 		}
 	}
-	present := make(map[target.ID]struct{}, len(pages))
-	for _, info := range pages {
-		present[info.TargetID] = struct{}{}
-	}
-	s.pruneTabPool(present)
 	return pages, nil
 }
 
@@ -335,59 +424,102 @@ func (s *Session) DetectForegroundShortContext(ctx context.Context, snaps []stat
 	if s == nil || len(snaps) == 0 {
 		return "", false
 	}
-	var picked string
-	for _, sn := range snaps {
-		if sn.TargetID == "" {
-			continue
-		}
-		tabCtx, err := s.tabChromeCtx(sn.TargetID)
+	return detectForegroundConcurrent(ctx, snaps, 16, 500*time.Millisecond, 5*time.Second, func(probe context.Context, sn state.TabSnapshot) (bool, error) {
+		tabCtx, err := s.tabChromeCtxContext(probe, sn.TargetID)
 		if err != nil {
-			continue
+			return false, err
 		}
 		var vis string
-		if err := runCDPWithContext(tabCtx, ctx, chromedp.Evaluate(`document.visibilityState`, &vis)); err != nil {
+		err = runCDPWithContext(tabCtx, probe, chromedp.Evaluate(`document.visibilityState`, &vis))
+		return vis == "visible", err
+	})
+}
+
+type visibilityProbe func(context.Context, state.TabSnapshot) (bool, error)
+
+func detectForegroundConcurrent(ctx context.Context, snaps []state.TabSnapshot, concurrency int, perTab, total time.Duration, probe visibilityProbe) (string, bool) {
+	if len(snaps) == 0 || probe == nil {
+		return "", false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	overall, cancel := context.WithTimeout(ctx, total)
+	defer cancel()
+	type result struct {
+		short   string
+		visible bool
+		ok      bool
+	}
+	results := make(chan result, len(snaps))
+	sem := make(chan struct{}, concurrency)
+	for _, sn := range snaps {
+		sn := sn
+		if sn.TargetID == "" {
+			results <- result{}
 			continue
 		}
-		if vis != "visible" {
+		go func() {
+			select {
+			case sem <- struct{}{}:
+			case <-overall.Done():
+				results <- result{}
+				return
+			}
+			defer func() { <-sem }()
+			probeCtx, stop := context.WithTimeout(overall, perTab)
+			defer stop()
+			visible, err := probe(probeCtx, sn)
+			if err != nil {
+				results <- result{}
+				return
+			}
+			results <- result{short: sn.ShortID, visible: visible, ok: true}
+		}()
+	}
+	var picked string
+	complete := 0
+	for range len(snaps) {
+		var r result
+		select {
+		case r = <-results:
+		case <-overall.Done():
+			return "", false
+		}
+		if r.ok {
+			complete++
+		}
+		if !r.visible {
 			continue
 		}
 		if picked != "" {
 			return "", false
 		}
-		picked = sn.ShortID
+		picked = r.short
 	}
-	if picked == "" {
+	if complete != len(snaps) || picked == "" {
 		return "", false
 	}
 	return picked, true
 }
 
-func (s *Session) pruneTabPool(present map[target.ID]struct{}) {
-	if s == nil {
-		return
-	}
-	var drop []context.CancelFunc
-	s.poolMu.Lock()
-	for id, ent := range s.tabPool {
-		if _, ok := present[id]; !ok {
-			delete(s.tabPool, id)
-			s.ClearRoutesForTarget(id)
-			drop = append(drop, ent.cancel)
-		}
-	}
-	s.poolMu.Unlock()
-	for _, c := range drop {
-		c()
-	}
-}
-
 // tabChromeCtx returns a chromedp context attached to tabID, creating and caching it on first use.
 func (s *Session) tabChromeCtx(tabID target.ID) (context.Context, error) {
+	return s.tabChromeCtxContext(context.Background(), tabID)
+}
+
+func (s *Session) tabChromeCtxContext(requestCtx context.Context, tabID target.ID) (context.Context, error) {
 	if s == nil {
 		return nil, fmt.Errorf("browser session is nil")
 	}
 	if tabID == "" {
 		return nil, fmt.Errorf("empty target id")
+	}
+	if requestCtx == nil {
+		requestCtx = context.Background()
 	}
 	s.poolMu.Lock()
 	if s.tabPool == nil {
@@ -395,17 +527,46 @@ func (s *Session) tabChromeCtx(tabID target.ID) (context.Context, error) {
 	}
 	if ent, ok := s.tabPool[tabID]; ok {
 		s.poolMu.Unlock()
-		return ent.ctx, nil
+		select {
+		case <-ent.ready:
+			return ent.ctx, ent.err
+		case <-requestCtx.Done():
+			return nil, wrapCDPError("Target.attachToTarget", tabID, requestCtx.Err())
+		}
 	}
+	ent := &tabPoolEntry{ready: make(chan struct{})}
 	ctx, cancel := chromedp.NewContext(s.ctx, chromedp.WithTargetID(tabID))
-	if err := runCDP(ctx); err != nil {
-		s.poolMu.Unlock()
-		cancel()
-		return nil, err
-	}
-	s.tabPool[tabID] = &tabPoolEntry{ctx: ctx, cancel: cancel}
+	ent.ctx = ctx
+	ent.cancel = cancel
+	s.tabPool[tabID] = ent
 	s.poolMu.Unlock()
-	return ctx, nil
+	go s.initializeTabPoolEntry(tabID, ent)
+	select {
+	case <-ent.ready:
+		return ent.ctx, ent.err
+	case <-requestCtx.Done():
+		return nil, wrapCDPError("Target.attachToTarget", tabID, requestCtx.Err())
+	}
+}
+
+// The first chromedp.Run must use the long-lived target context itself. Running it
+// on a request timeout child would bind Target.run to that child and kill the cached
+// executor as soon as the request returned.
+func (s *Session) initializeTabPoolEntry(tabID target.ID, ent *tabPoolEntry) {
+	err := chromedp.Run(ent.ctx)
+	s.poolMu.Lock()
+	defer s.poolMu.Unlock()
+	if s.tabPool[tabID] != ent {
+		ent.err = &CDPError{Kind: ErrorTargetGone, Op: "Target.attachToTarget", Target: tabID, Err: fmt.Errorf("target removed while attaching")}
+		close(ent.ready)
+		return
+	}
+	if err != nil {
+		ent.err = wrapCDPError("Target.attachToTarget", tabID, err)
+		close(ent.ready)
+		return
+	}
+	close(ent.ready)
 }
 
 // CreatePageTarget opens a new page target (INV-7: works when zero tabs exist).
@@ -432,7 +593,7 @@ func (s *Session) CreatePageTargetContext(ctx context.Context, initialURL string
 	defer stop()
 	id, err := params.Do(cdp.WithExecutor(opCtx, ex))
 	if err != nil {
-		return "", err
+		return "", wrapCDPError("Target.createTarget", "", err)
 	}
 	return id, nil
 }
@@ -446,17 +607,6 @@ func (s *Session) CloseTargetContext(ctx context.Context, id target.ID) error {
 	if s == nil {
 		return fmt.Errorf("browser session is nil")
 	}
-	var poolCancel context.CancelFunc
-	s.poolMu.Lock()
-	if ent, ok := s.tabPool[id]; ok {
-		delete(s.tabPool, id)
-		poolCancel = ent.cancel
-	}
-	s.poolMu.Unlock()
-	if poolCancel != nil {
-		poolCancel()
-		return nil
-	}
 	ex := browserExecutor(s.ctx)
 	if ex == nil {
 		return fmt.Errorf("browser not available in context")
@@ -465,7 +615,23 @@ func (s *Session) CloseTargetContext(ctx context.Context, id target.ID) error {
 	stop := context.AfterFunc(ctx, cancel)
 	defer cancel()
 	defer stop()
-	return target.CloseTarget(id).Do(cdp.WithExecutor(opCtx, ex))
+	if err := target.CloseTarget(id).Do(cdp.WithExecutor(opCtx, ex)); err != nil {
+		return wrapCDPError("Target.closeTarget", id, err)
+	}
+	var poolCancel context.CancelFunc
+	s.poolMu.Lock()
+	if ent, ok := s.tabPool[id]; ok {
+		delete(s.tabPool, id)
+		poolCancel = ent.cancel
+	}
+	s.poolMu.Unlock()
+	if poolCancel != nil {
+		// The target is already gone; chromedp's cleanup may repeat detach/close but
+		// cannot accidentally close a different live tab.
+		poolCancel()
+	}
+	s.ClearRoutesForTarget(id)
+	return nil
 }
 
 // Navigate navigates the given page target to url.
@@ -477,11 +643,11 @@ func (s *Session) NavigateContext(ctx context.Context, tabID target.ID, url stri
 	if s == nil {
 		return fmt.Errorf("browser session is nil")
 	}
-	tabCtx, err := s.tabChromeCtx(tabID)
+	tabCtx, err := s.tabChromeCtxContext(ctx, tabID)
 	if err != nil {
 		return err
 	}
-	return runCDPWithContext(tabCtx, ctx, chromedp.Navigate(url))
+	return wrapCDPError("Page.navigate", tabID, runCDPWithContext(tabCtx, ctx, chromedp.Navigate(url)))
 }
 
 // Reload performs a full navigation reload for the page target.
@@ -493,11 +659,11 @@ func (s *Session) ReloadContext(ctx context.Context, tabID target.ID) error {
 	if s == nil {
 		return fmt.Errorf("browser session is nil")
 	}
-	tabCtx, err := s.tabChromeCtx(tabID)
+	tabCtx, err := s.tabChromeCtxContext(ctx, tabID)
 	if err != nil {
 		return err
 	}
-	return runCDPWithContext(tabCtx, ctx, chromedp.Reload())
+	return wrapCDPError("Page.reload", tabID, runCDPWithContext(tabCtx, ctx, chromedp.Reload()))
 }
 
 // Screenshot captures the viewport; format is "png" (default) or "jpeg".
@@ -509,7 +675,7 @@ func (s *Session) ScreenshotContext(ctx context.Context, tabID target.ID, format
 	if s == nil {
 		return nil, "", fmt.Errorf("browser session is nil")
 	}
-	tabCtx, err := s.tabChromeCtx(tabID)
+	tabCtx, err := s.tabChromeCtxContext(ctx, tabID)
 	if err != nil {
 		return nil, "", err
 	}
@@ -524,11 +690,11 @@ func (s *Session) ScreenshotContext(ctx context.Context, tabID target.ID, format
 				Do(ctx)
 			return err
 		}))
-		return buf, "image/jpeg", err
+		return buf, "image/jpeg", wrapCDPError("Page.captureScreenshot", tabID, err)
 	}
 	var buf []byte
 	err = runCDPWithContext(tabCtx, ctx, chromedp.CaptureScreenshot(&buf))
-	return buf, "image/png", err
+	return buf, "image/png", wrapCDPError("Page.captureScreenshot", tabID, err)
 }
 
 // Eval runs script in the page and returns JSON-marshalable result as RawMessage.
@@ -551,9 +717,9 @@ func (s *Session) EvalAwaitContext(ctx context.Context, tabID target.ID, script 
 	if s == nil {
 		return nil, errNilSession()
 	}
-	tabCtx, err := s.tabChromeCtx(tabID)
+	tabCtx, err := s.tabChromeCtxContext(ctx, tabID)
 	if err != nil {
-		return nil, err
+		return nil, wrapCDPError("Runtime.evaluate", tabID, err)
 	}
 	var raw []byte
 	err = runCDPWithContext(tabCtx, ctx, chromedp.Evaluate(script, &raw, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
@@ -574,11 +740,11 @@ func (s *Session) ClickContext(ctx context.Context, tabID target.ID, selector st
 	if s == nil {
 		return fmt.Errorf("browser session is nil")
 	}
-	tabCtx, err := s.tabChromeCtx(tabID)
+	tabCtx, err := s.tabChromeCtxContext(ctx, tabID)
 	if err != nil {
 		return err
 	}
-	return runCDPWithContext(tabCtx, ctx, chromedp.Click(selector, chromedp.ByQuery))
+	return wrapCDPError("DOM.click", tabID, runCDPWithContext(tabCtx, ctx, chromedp.Click(selector, chromedp.ByQuery)))
 }
 
 // Fill sets the value of an input/textarea (see chromedp.SetValue).
@@ -590,9 +756,9 @@ func (s *Session) FillContext(ctx context.Context, tabID target.ID, selector, te
 	if s == nil {
 		return fmt.Errorf("browser session is nil")
 	}
-	tabCtx, err := s.tabChromeCtx(tabID)
+	tabCtx, err := s.tabChromeCtxContext(ctx, tabID)
 	if err != nil {
 		return err
 	}
-	return runCDPWithContext(tabCtx, ctx, chromedp.SetValue(selector, text, chromedp.ByQuery))
+	return wrapCDPError("DOM.fill", tabID, runCDPWithContext(tabCtx, ctx, chromedp.SetValue(selector, text, chromedp.ByQuery)))
 }

@@ -1,6 +1,6 @@
 [Service]
 Type=simple
-ExecStart=%h/go/bin/bb-daemon --debugger-url http://127.0.0.1:9222
+ExecStart=%h/.local/bin/bb-daemon --debugger-url http://127.0.0.1:9222
 Restart=on-failure
 RestartSec=2s
 KillSignal=SIGTERM

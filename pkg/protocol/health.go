@@ -12,3 +12,9 @@ type HealthResult struct {
 	Status  string `json:"status"`
 	Browser string `json:"browser"`
 }
+
+// LivenessResult is returned by GET /live. It deliberately has no browser field:
+// liveness must never depend on CDP responsiveness.
+type LivenessResult struct {
+	Status string `json:"status"`
+}

@@ -125,7 +125,7 @@ func (s *Session) NetworkRouteCount(tabID target.ID) int {
 }
 
 func (s *Session) syncFetchEnableLocked(ctx context.Context, rs *routeState, tabID target.ID) error {
-	tabCtx, err := s.tabChromeCtx(tabID)
+	tabCtx, err := s.tabChromeCtxContext(ctx, tabID)
 	if err != nil {
 		return err
 	}

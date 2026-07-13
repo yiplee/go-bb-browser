@@ -9,10 +9,16 @@ services:
       BB_BROWSER_LISTEN: "0.0.0.0:8787"
       BB_BROWSER_STATE_DIR: "/var/lib/bb-daemon"
       BB_BROWSER_TAB_IDLE_TIMEOUT: "5m"
+      BB_BROWSER_OBSERVER_IDLE_TIMEOUT: "5m"
+      BB_BROWSER_CDP_WATCHDOG_INTERVAL: "5s"
+      BB_BROWSER_CDP_WATCHDOG_TIMEOUT: "2s"
+      BB_BROWSER_CDP_WATCHDOG_FAILURES: "3"
     ports:
       - "8787:8787"
     volumes:
       - bb-state:/var/lib/bb-daemon
+    # The supplied distroless image has no shell/curl. Configure the hosting
+    # platform's HTTP liveness probe as GET /live and readiness as GET /ready.
 
 volumes:
   bb-state:

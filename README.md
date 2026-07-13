@@ -40,11 +40,11 @@ go test ./...
 | 层级 | 职责 |
 |------|------|
 | **`cmd/bb-daemon`** | 解析 `--debugger-url` / `--listen`（及对应环境变量），构造 `daemon.Config`，启动 `daemon.Server`。 |
-| **`internal/daemon`** | `http.ServeMux`：`GET /health` 返回 JSON `{"status":"ok","browser":"connected"|"disconnected"|"skipped"}`（CDP 不可用时 HTTP 503）；`POST /v1` 解析 [JSON-RPC 2.0](https://www.jsonrpc.org/specification)，按 `method` 分发到各 handler。维护与 Chrome 的 **单一 CDP 会话**（启动时 `connectBrowserLocked`），失败时可重连（`ensureBrowserSession`）。 |
+| **`internal/daemon`** | `http.ServeMux`、JSON-RPC 分发、tab 生命周期协调器和 CDP supervisor。supervisor 以 `Browser.getVersion` 维护 `ready → suspect → failed`；确认失败后 daemon 非零退出，由 systemd/Docker 重启，不在进程内重连。 |
 | **`internal/store`** | **RPC log**（`{StateDir}/rpc.jsonl`，append-only）；**全局单调 `seq`**（启动时以纳秒时钟为起始值，内存自增）。 |
 | **`internal/state`** | **短 tab id 注册表**（`TabRegistry`，关 tab 释放 id、清缓冲）；**按 tab 隔离的观测环形缓冲**（`TabObsStore` + `ringbuf`），满足 INV-1～INV-7 类不变量。 |
-| **`internal/daemon`（观测）** | `obsSink` 把 CDP 事件写入 `TabObsStore`；`syncObservation` 与 `tab_list` 等路径对齐目标列表并清理已关闭 target 的缓冲。 |
-| **`internal/browser`** | chromedp：`Session` 持有远程 allocator 上下文，执行 `goto` / `eval` / `click` / `snapshot` / Fetch 域路由等；**不**负责启动 Chrome。 |
+| **`internal/daemon`（观测）** | network / console / errors 首次查询时按需启用并续租；listener 只向每 tab 的 1024 容量非阻塞队列投递，worker 编码并写 ring buffer。 |
+| **`internal/browser`** | browser control 只在 browser executor 上执行 `Browser.*` / `Target.*`；每 tab 独立缓存执行 context，observer context 与页面操作 context 分离；**不**负责启动 Chrome。 |
 | **`pkg/protocol`** | JSON-RPC 请求/响应与各 `method` 的 params/result 类型，供 daemon 与 `pkg/daemonclient` 共用。 |
 
 ```mermaid
@@ -55,7 +55,8 @@ flowchart LR
   SRV[daemon.Server]
   ST[state: tabs, obs]
   BG[store: rpc.jsonl seq]
-  BR[browser.Session CDP]
+  SUP[session supervisor]
+  BR[browser control / tab executors]
   CH[Chrome remote debugging]
 
   CLI --> HTTP
@@ -63,7 +64,8 @@ flowchart LR
   RPC --> SRV
   SRV --> ST
   SRV --> BG
-  SRV --> BR
+  SRV --> SUP
+  SUP --> BR
   BR --> CH
 ```
 
@@ -74,6 +76,10 @@ flowchart LR
 | `BB_BROWSER_DEBUGGER_URL` | Chrome DevTools 端点（`host:port` 或 ws/http URL），等价 `--debugger-url` |
 | `BB_BROWSER_LISTEN` | daemon 监听地址，默认 `127.0.0.1:8787` |
 | `BB_BROWSER_TAB_IDLE_TIMEOUT` | 自动关闭 daemon 创建的 idle tab 的超时，默认 `5m`；`0` 禁用 |
+| `BB_BROWSER_CDP_WATCHDOG_INTERVAL` | `Browser.getVersion` 探测间隔，默认 `5s` |
+| `BB_BROWSER_CDP_WATCHDOG_TIMEOUT` | 单次探测超时，默认 `2s` |
+| `BB_BROWSER_CDP_WATCHDOG_FAILURES` | 连续失败多少次后确认 session 失效并退出，默认 `3` |
+| `BB_BROWSER_OBSERVER_IDLE_TIMEOUT` | 观测接口无查询后 disable CDP domain 的时间，默认 `5m`；`0` 表示保持到 tab 关闭 |
 | `BB_BROWSER_STATE_DIR` | RPC log 目录，默认 `~/.local/state/bb-daemon`（`rpc.jsonl`）；`-` 为 in-memory；等价 `--state-dir` |
 | `BB_BROWSER_RPC_LOG_MAX_BYTES` | `rpc.jsonl` 超过该字节数即轮转，默认 `8388608`（8 MiB）；等价 `--rpc-log-max-bytes` |
 
@@ -90,6 +96,10 @@ services:
       BB_BROWSER_LISTEN: "0.0.0.0:8787"
       BB_BROWSER_STATE_DIR: "/var/lib/bb-daemon"
       BB_BROWSER_TAB_IDLE_TIMEOUT: "5m"
+      BB_BROWSER_OBSERVER_IDLE_TIMEOUT: "5m"
+      BB_BROWSER_CDP_WATCHDOG_INTERVAL: "5s"
+      BB_BROWSER_CDP_WATCHDOG_TIMEOUT: "2s"
+      BB_BROWSER_CDP_WATCHDOG_FAILURES: "3"
     ports:
       - "8787:8787"
     volumes:
@@ -101,7 +111,7 @@ volumes:
 
 镜像内默认用户为 `nonroot`（uid 65532）；bind mount 时需确保目录可写，或使用 named volume。
 
-**HTTP API 摘要**：`POST /v1` 体为 JSON-RPC：`jsonrpc`、`method`、`params`、`id`。成功时 `result`；失败时 `error`（`code`、`message`、可选 `data`）。业务成功响应在适用处带 **`tab`** 与 **`seq`**；网络/控制台/错误等观测类结果带 **`cursor`** / **`events`** 等（见 `pkg/protocol` 与现有 README 中的方法表）。非 POST 访问 `/v1` 返回 **405**。
+**HTTP API 摘要**：`GET /live` 是纯 HTTP liveness，不访问 CDP；`GET /ready` 读取 supervisor 缓存，`suspect` / `failed` 返回 503；兼容的 `GET /health` 在 `ready` / `suspect` 返回 connected/200，仅 confirmed failed 返回 disconnected/503。进程存活探针使用 `/live`，接流量前使用 `/ready`。`POST /v1` 体为 JSON-RPC：`jsonrpc`、`method`、`params`、`id`。成功时 `result`；失败时 `error`（`code`、`message`、可选 `data`）。业务成功响应在适用处带 **`tab`** 与 **`seq`**；网络/控制台/错误等观测类结果带 **`cursor`** / **`events`** 等。非 POST 访问 `/v1` 返回 **405**。
 
 Daemon 已实现但 **CLI 未封装** 的 JSON-RPC 方法：`tab_focus`（返回当前可操作 tab 元数据）。
 
@@ -109,8 +119,8 @@ Daemon 已实现但 **CLI 未封装** 的 JSON-RPC 方法：`tab_focus`（返回
 
 | `method` | 说明 |
 |----------|------|
-| `tab_list` | 列出 page target / 焦点 tab |
-| `tab_focus` | 同步后返回当前可操作 tab 元数据 |
+| `tab_list` | 一次 `Target.getTargets` 列出 page target；`focus` 为 daemon 缓存，不 attach / eval tab |
+| `tab_focus` | 并发探测 visibility 后返回当前可操作 tab 元数据；探测不完整时保留缓存焦点 |
 | `tab_select` | 切换 daemon 焦点 tab |
 | `tab_new` | 新建 tab（可选 `url`；`silent: true` 后台开 tab，不抢焦点） |
 | `tab_close` | 关闭 tab |
@@ -143,9 +153,11 @@ Daemon 已实现但 **CLI 未封装** 的 JSON-RPC 方法：`tab_focus`（返回
 
 ### `health`
 
-- **作用**：`GET {--url}/health`。返回 daemon 状态及与 Chrome 的 CDP 连通性。
+- **作用**：`GET {--url}/health`。返回 supervisor 缓存的 Chrome CDP 状态，不同步探测和枚举 targets。
 - **响应**：`{"status":"ok","browser":"connected"|"disconnected"|"skipped"}`。`browser` 为 `disconnected` 时 HTTP **503**。
 - **参数**：无。
+
+部署探针直接使用 HTTP：liveness 为 `GET /live`（`{"status":"ok"}`）；readiness 为 `GET /ready`（与 health 相同结构，`suspect` 即 503）。
 
 ---
 

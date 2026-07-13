@@ -43,6 +43,27 @@ func TestHealth_httpError(t *testing.T) {
 	}
 }
 
+func TestLiveAndReady(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/live":
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		case "/ready":
+			_, _ = w.Write([]byte(`{"status":"ok","browser":"connected"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL)
+	if err := c.Live(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Ready(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCall_success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1" || r.Method != http.MethodPost {

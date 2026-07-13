@@ -103,7 +103,21 @@ func (c *Client) Health(ctx context.Context) error {
 
 // HealthResult performs GET /health and decodes the response body.
 func (c *Client) HealthResult(ctx context.Context) (protocol.HealthResult, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/health", nil)
+	return c.browserStatusResult(ctx, "/health")
+}
+
+// Ready checks the cached CDP watchdog readiness exposed by GET /ready.
+func (c *Client) Ready(ctx context.Context) error {
+	_, err := c.ReadyResult(ctx)
+	return err
+}
+
+func (c *Client) ReadyResult(ctx context.Context) (protocol.HealthResult, error) {
+	return c.browserStatusResult(ctx, "/ready")
+}
+
+func (c *Client) browserStatusResult(ctx context.Context, path string) (protocol.HealthResult, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
 	if err != nil {
 		return protocol.HealthResult{}, err
 	}
@@ -127,6 +141,35 @@ func (c *Client) HealthResult(ctx context.Context) (protocol.HealthResult, error
 		return protocol.HealthResult{}, fmt.Errorf("decode health response: %w", err)
 	}
 	return out, nil
+}
+
+// Live checks the daemon HTTP process without consulting Chrome or CDP state.
+func (c *Client) Live(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/live", nil)
+	if err != nil {
+		return err
+	}
+	c.applyHeaders(req)
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return &HTTPError{StatusCode: resp.StatusCode, Body: string(b)}
+	}
+	var out protocol.LivenessResult
+	if err := json.Unmarshal(b, &out); err != nil {
+		return fmt.Errorf("decode liveness response: %w", err)
+	}
+	if out.Status != "ok" {
+		return fmt.Errorf("daemon is not live: status %q", out.Status)
+	}
+	return nil
 }
 
 // Call performs a single JSON-RPC request on POST /v1. result must be a non-nil pointer
