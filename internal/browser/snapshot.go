@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -131,6 +132,10 @@ type snapshotPayload struct {
 
 // Snapshot captures a compact tree snapshot and assigns __bb_snap_ref attributes for selectors.
 func (s *Session) Snapshot(tabID target.ID, opts SnapshotOpts) (title, url, text string, refs map[string]string, err error) {
+	return s.SnapshotContext(context.Background(), tabID, opts)
+}
+
+func (s *Session) SnapshotContext(ctx context.Context, tabID target.ID, opts SnapshotOpts) (title, url, text string, refs map[string]string, err error) {
 	if s == nil {
 		return "", "", "", nil, errNilSession()
 	}
@@ -153,7 +158,7 @@ func (s *Session) Snapshot(tabID target.ID, opts SnapshotOpts) (title, url, text
 	expr := fmt.Sprintf(snapshotStub, string(optJSON))
 
 	var raw []byte
-	err = runCDP(tabCtx, chromedp.Evaluate(expr, &raw))
+	err = runCDPWithContext(tabCtx, ctx, chromedp.Evaluate(expr, &raw))
 	if err != nil {
 		return "", "", "", nil, err
 	}

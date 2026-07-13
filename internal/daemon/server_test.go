@@ -119,6 +119,21 @@ func TestHealthBrowserDisconnected(t *testing.T) {
 	}
 }
 
+type deadlineHealthConn struct{ fakeConn }
+
+func (deadlineHealthConn) PingBrowserContext(ctx context.Context) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestHealthProbeHonorsContextDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if got := pingTabConnContext(ctx, &deadlineHealthConn{}); got != protocol.HealthBrowserDisconnected {
+		t.Fatalf("health result = %q, want disconnected", got)
+	}
+}
+
 func TestHealthPostMethodNotAllowed(t *testing.T) {
 	cfg := Config{
 		DebuggerURL: "127.0.0.1:9222",

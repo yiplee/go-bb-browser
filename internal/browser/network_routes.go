@@ -46,6 +46,10 @@ func (s *Session) routeStateLocked() *routeState {
 
 // SetNetworkRoutes replaces all Fetch interception rules for a tab and syncs CDP.
 func (s *Session) SetNetworkRoutes(tabID target.ID, rules []NetworkRouteRule) error {
+	return s.SetNetworkRoutesContext(context.Background(), tabID, rules)
+}
+
+func (s *Session) SetNetworkRoutesContext(ctx context.Context, tabID target.ID, rules []NetworkRouteRule) error {
 	if s == nil {
 		return errNilSession()
 	}
@@ -54,16 +58,20 @@ func (s *Session) SetNetworkRoutes(tabID target.ID, rules []NetworkRouteRule) er
 	defer rs.mu.Unlock()
 	if len(rules) == 0 {
 		delete(rs.rules, tabID)
-		return s.syncFetchEnableLocked(rs, tabID)
+		return s.syncFetchEnableLocked(ctx, rs, tabID)
 	}
 	cp := make([]NetworkRouteRule, len(rules))
 	copy(cp, rules)
 	rs.rules[tabID] = cp
-	return s.syncFetchEnableLocked(rs, tabID)
+	return s.syncFetchEnableLocked(ctx, rs, tabID)
 }
 
 // AppendNetworkRoute adds one rule for a tab (existing rules preserved).
 func (s *Session) AppendNetworkRoute(tabID target.ID, rule NetworkRouteRule) error {
+	return s.AppendNetworkRouteContext(context.Background(), tabID, rule)
+}
+
+func (s *Session) AppendNetworkRouteContext(ctx context.Context, tabID target.ID, rule NetworkRouteRule) error {
 	if s == nil {
 		return errNilSession()
 	}
@@ -71,11 +79,15 @@ func (s *Session) AppendNetworkRoute(tabID target.ID, rule NetworkRouteRule) err
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 	rs.rules[tabID] = append(rs.rules[tabID], rule)
-	return s.syncFetchEnableLocked(rs, tabID)
+	return s.syncFetchEnableLocked(ctx, rs, tabID)
 }
 
 // RemoveNetworkRoutes removes rules whose URLPattern matches pattern; empty pattern clears all rules for the tab.
 func (s *Session) RemoveNetworkRoutes(tabID target.ID, urlPattern string) error {
+	return s.RemoveNetworkRoutesContext(context.Background(), tabID, urlPattern)
+}
+
+func (s *Session) RemoveNetworkRoutesContext(ctx context.Context, tabID target.ID, urlPattern string) error {
 	if s == nil {
 		return errNilSession()
 	}
@@ -85,7 +97,7 @@ func (s *Session) RemoveNetworkRoutes(tabID target.ID, urlPattern string) error 
 	pat := strings.TrimSpace(urlPattern)
 	if pat == "" {
 		delete(rs.rules, tabID)
-		return s.syncFetchEnableLocked(rs, tabID)
+		return s.syncFetchEnableLocked(ctx, rs, tabID)
 	}
 	cur := rs.rules[tabID]
 	var out []NetworkRouteRule
@@ -99,7 +111,7 @@ func (s *Session) RemoveNetworkRoutes(tabID target.ID, urlPattern string) error 
 	} else {
 		rs.rules[tabID] = out
 	}
-	return s.syncFetchEnableLocked(rs, tabID)
+	return s.syncFetchEnableLocked(ctx, rs, tabID)
 }
 
 // NetworkRouteCount returns how many interception rules are active for a tab.
@@ -112,7 +124,7 @@ func (s *Session) NetworkRouteCount(tabID target.ID) int {
 	return len(s.routeState.rules[tabID])
 }
 
-func (s *Session) syncFetchEnableLocked(rs *routeState, tabID target.ID) error {
+func (s *Session) syncFetchEnableLocked(ctx context.Context, rs *routeState, tabID target.ID) error {
 	tabCtx, err := s.tabChromeCtx(tabID)
 	if err != nil {
 		return err
@@ -120,8 +132,8 @@ func (s *Session) syncFetchEnableLocked(rs *routeState, tabID target.ID) error {
 	rules := rs.rules[tabID]
 	if len(rules) == 0 {
 		delete(rs.listenerRegistered, tabID)
-		return runCDP(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-			return fetch.Disable().Do(ctx)
+		return runCDPWithContext(tabCtx, ctx, chromedp.ActionFunc(func(c context.Context) error {
+			return fetch.Disable().Do(c)
 		}))
 	}
 
@@ -194,8 +206,8 @@ func (s *Session) syncFetchEnableLocked(rs *routeState, tabID target.ID) error {
 	if len(patterns) == 0 {
 		return nil
 	}
-	return runCDP(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-		return fetch.Enable().WithPatterns(patterns).Do(ctx)
+	return runCDPWithContext(tabCtx, ctx, chromedp.ActionFunc(func(c context.Context) error {
+		return fetch.Enable().WithPatterns(patterns).Do(c)
 	}))
 }
 

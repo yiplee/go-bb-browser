@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -12,6 +13,10 @@ import (
 
 // FetchPage runs fetch() in page context with credentials included; resolves relative URLs against the document.
 func (s *Session) FetchPage(tabID target.ID, rawURL, method string, headersJSON []byte, body string) (json.RawMessage, error) {
+	return s.FetchPageContext(context.Background(), tabID, rawURL, method, headersJSON, body)
+}
+
+func (s *Session) FetchPageContext(ctx context.Context, tabID target.ID, rawURL, method string, headersJSON []byte, body string) (json.RawMessage, error) {
 	if s == nil {
 		return nil, errNilSession()
 	}
@@ -83,7 +88,7 @@ func (s *Session) FetchPage(tabID target.ID, rawURL, method string, headersJSON 
 })()`, string(rawQ), string(methQ), string(h), string(bodyQ))
 
 	var raw []byte
-	err = runCDP(tabCtx, chromedp.Evaluate(expr, &raw, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
+	err = runCDPWithContext(tabCtx, ctx, chromedp.Evaluate(expr, &raw, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
 		return p.WithAwaitPromise(true).WithReturnByValue(true)
 	}))
 	if err != nil {

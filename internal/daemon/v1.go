@@ -16,6 +16,7 @@ import (
 	"github.com/yiplee/go-bb-browser/internal/browser"
 	"github.com/yiplee/go-bb-browser/internal/state"
 	"github.com/yiplee/go-bb-browser/internal/store"
+	"github.com/yiplee/go-bb-browser/internal/timeout"
 	"github.com/yiplee/go-bb-browser/pkg/protocol"
 )
 
@@ -76,7 +77,7 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, defaultOperationTimeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout.Operation)
 	defer cancel()
 
 	ctx = contextWithAudit(ctx, &auditMeta{
@@ -218,7 +219,7 @@ func (s *Server) handleTabList(ctx context.Context, w http.ResponseWriter, id js
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "browser session not ready", nil)
 		return
 	}
-	targets, err := conn.PageTargets()
+	targets, err := pageTargets(ctx, conn)
 	if err != nil {
 		s.logger.Error("tab_list targets failed", "err", err)
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "failed to list targets", &protocol.ErrData{
@@ -231,7 +232,7 @@ func (s *Server) handleTabList(ctx context.Context, w http.ResponseWriter, id js
 	sort.Slice(snaps, func(i, j int) bool {
 		return snaps[i].ShortID < snaps[j].ShortID
 	})
-	s.syncRegistryFocusFromBrowser(conn, snaps)
+	s.syncRegistryFocusFromBrowser(ctx, conn, snaps)
 	items := make([]protocol.TabListItem, 0, len(snaps))
 	for _, sn := range snaps {
 		items = append(items, protocol.TabListItem{
@@ -268,7 +269,7 @@ func (s *Server) handleTabFocus(ctx context.Context, w http.ResponseWriter, id j
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "browser session not ready", nil)
 		return
 	}
-	targets, err := conn.PageTargets()
+	targets, err := pageTargets(ctx, conn)
 	if err != nil {
 		s.logger.Error("tab_focus targets failed", "err", err)
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "failed to list targets", &protocol.ErrData{
@@ -289,7 +290,7 @@ func (s *Server) handleTabFocus(ctx context.Context, w http.ResponseWriter, id j
 	sort.Slice(snaps, func(i, j int) bool {
 		return snaps[i].ShortID < snaps[j].ShortID
 	})
-	s.syncRegistryFocusFromBrowser(conn, snaps)
+	s.syncRegistryFocusFromBrowser(ctx, conn, snaps)
 	focus := s.tabs.Selected()
 	tabField := operationalTabShort(s.tabs, snaps)
 	var title, url string
@@ -317,12 +318,22 @@ func (s *Server) handleTabFocus(ctx context.Context, w http.ResponseWriter, id j
 // syncRegistryFocusFromBrowser updates TabRegistry selection when the browser
 // has exactly one page with document.visibilityState === "visible" (typical
 // single-window foreground tab after the user switches tabs in Chrome).
-func (s *Server) syncRegistryFocusFromBrowser(conn tabConn, snaps []state.TabSnapshot) {
+func (s *Server) syncRegistryFocusFromBrowser(ctx context.Context, conn tabConn, snaps []state.TabSnapshot) {
 	if conn == nil || len(snaps) == 0 {
 		return
 	}
 	type foregroundDetector interface {
 		DetectForegroundShort(snaps []state.TabSnapshot) (short string, ok bool)
+	}
+	type foregroundDetectorContext interface {
+		DetectForegroundShortContext(context.Context, []state.TabSnapshot) (short string, ok bool)
+	}
+	if d, ok := conn.(foregroundDetectorContext); ok {
+		sh, ok := d.DetectForegroundShortContext(ctx, snaps)
+		if ok {
+			_ = s.tabs.Select(sh)
+		}
+		return
 	}
 	d, ok := conn.(foregroundDetector)
 	if !ok {
@@ -370,7 +381,7 @@ func (s *Server) handleTabSelect(ctx context.Context, w http.ResponseWriter, id 
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "browser session not ready", nil)
 		return
 	}
-	targets, err := conn.PageTargets()
+	targets, err := pageTargets(ctx, conn)
 	if err != nil {
 		s.logger.Error("tab_select targets failed", "err", err)
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "failed to list targets", &protocol.ErrData{
@@ -411,7 +422,7 @@ func (s *Server) handleTabNew(ctx context.Context, w http.ResponseWriter, id jso
 		return
 	}
 	initial := strings.TrimSpace(p.URL)
-	tid, err := conn.CreatePageTarget(initial, p.Silent)
+	tid, err := createPageTarget(ctx, conn, initial, p.Silent)
 	if err != nil {
 		s.logger.Error("tab_new create target failed", "err", err)
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "failed to create tab", &protocol.ErrData{
@@ -425,7 +436,7 @@ func (s *Server) handleTabNew(ctx context.Context, w http.ResponseWriter, id jso
 	if !p.Silent {
 		s.tabs.Select(short)
 	}
-	targets, ptErr := conn.PageTargets()
+	targets, ptErr := pageTargets(ctx, conn)
 	if ptErr == nil {
 		s.syncTabsFromTargets(targets)
 	}
@@ -474,7 +485,7 @@ func (s *Server) handleGoto(ctx context.Context, w http.ResponseWriter, id json.
 		return
 	}
 	defer unlock()
-	tid, ok := s.resolveTab(conn, tab)
+	tid, ok := s.resolveTab(ctx, conn, tab)
 	if !ok {
 		s.rpcErr(ctx, w, id, protocol.CodeInvalidParams, "unknown tab id", &protocol.ErrData{
 			Error:  "unknown tab id",
@@ -483,7 +494,7 @@ func (s *Server) handleGoto(ctx context.Context, w http.ResponseWriter, id json.
 		})
 		return
 	}
-	if err := conn.Navigate(tid, urlStr); err != nil {
+	if err := navigate(ctx, conn, tid, urlStr); err != nil {
 		s.logger.Error("goto navigate failed", "err", err)
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "navigation failed", &protocol.ErrData{
 			Error: "navigation failed",
@@ -524,7 +535,7 @@ func (s *Server) handleReload(ctx context.Context, w http.ResponseWriter, id jso
 		return
 	}
 	defer unlock()
-	tid, ok := s.resolveTab(conn, tab)
+	tid, ok := s.resolveTab(ctx, conn, tab)
 	if !ok {
 		s.rpcErr(ctx, w, id, protocol.CodeInvalidParams, "unknown tab id", &protocol.ErrData{
 			Error:  "unknown tab id",
@@ -533,7 +544,7 @@ func (s *Server) handleReload(ctx context.Context, w http.ResponseWriter, id jso
 		})
 		return
 	}
-	if err := conn.Reload(tid); err != nil {
+	if err := reload(ctx, conn, tid); err != nil {
 		s.logger.Error("reload failed", "err", err)
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "reload failed", &protocol.ErrData{
 			Error: "reload failed",
@@ -568,7 +579,7 @@ func (s *Server) handleTabClose(ctx context.Context, w http.ResponseWriter, id j
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "browser session not ready", nil)
 		return
 	}
-	if err := s.closeTabByShort(tab); err != nil {
+	if err := s.closeTabByShort(ctx, tab); err != nil {
 		switch {
 		case errors.Is(err, errTabCloseUnknownID):
 			s.rpcErr(ctx, w, id, protocol.CodeInvalidParams, "unknown tab id", &protocol.ErrData{
@@ -619,7 +630,7 @@ func (s *Server) handleScreenshot(ctx context.Context, w http.ResponseWriter, id
 		return
 	}
 	defer unlock()
-	tid, ok := s.resolveTab(conn, tab)
+	tid, ok := s.resolveTab(ctx, conn, tab)
 	if !ok {
 		s.rpcErr(ctx, w, id, protocol.CodeInvalidParams, "unknown tab id", &protocol.ErrData{
 			Error:  "unknown tab id",
@@ -628,7 +639,7 @@ func (s *Server) handleScreenshot(ctx context.Context, w http.ResponseWriter, id
 		})
 		return
 	}
-	raw, mime, err := conn.Screenshot(tid, p.Format)
+	raw, mime, err := screenshot(ctx, conn, tid, p.Format)
 	if err != nil {
 		s.logger.Error("screenshot failed", "err", err)
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "screenshot failed", &protocol.ErrData{
@@ -682,7 +693,7 @@ func (s *Server) handleEval(ctx context.Context, w http.ResponseWriter, id json.
 		return
 	}
 	defer unlock()
-	tid, ok := s.resolveTab(conn, tab)
+	tid, ok := s.resolveTab(ctx, conn, tab)
 	if !ok {
 		s.rpcErr(ctx, w, id, protocol.CodeInvalidParams, "unknown tab id", &protocol.ErrData{
 			Error:  "unknown tab id",
@@ -691,7 +702,7 @@ func (s *Server) handleEval(ctx context.Context, w http.ResponseWriter, id json.
 		})
 		return
 	}
-	out, err := conn.Eval(tid, script)
+	out, err := eval(ctx, conn, tid, script)
 	if err != nil {
 		s.logger.Error("eval failed", "err", err)
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "eval failed", &protocol.ErrData{
@@ -745,7 +756,7 @@ func (s *Server) handleClick(ctx context.Context, w http.ResponseWriter, id json
 		return
 	}
 	defer unlock()
-	tid, ok := s.resolveTab(conn, tab)
+	tid, ok := s.resolveTab(ctx, conn, tab)
 	if !ok {
 		s.rpcErr(ctx, w, id, protocol.CodeInvalidParams, "unknown tab id", &protocol.ErrData{
 			Error:  "unknown tab id",
@@ -754,7 +765,7 @@ func (s *Server) handleClick(ctx context.Context, w http.ResponseWriter, id json
 		})
 		return
 	}
-	if err := conn.Click(tid, sel); err != nil {
+	if err := click(ctx, conn, tid, sel); err != nil {
 		s.logger.Error("click failed", "err", err)
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "click failed", &protocol.ErrData{
 			Error: "click failed",
@@ -833,7 +844,7 @@ func (s *Server) handleObsQuery(ctx context.Context, w http.ResponseWriter, id j
 		return
 	}
 	defer unlock()
-	tid, ok := s.resolveTab(conn, tab)
+	tid, ok := s.resolveTab(ctx, conn, tab)
 	if !ok {
 		s.rpcErr(ctx, w, id, protocol.CodeInvalidParams, "unknown tab id", &protocol.ErrData{
 			Error:  "unknown tab id",
@@ -890,7 +901,7 @@ func (s *Server) handleFetch(ctx context.Context, w http.ResponseWriter, id json
 		return
 	}
 	defer unlock()
-	tid, ok := s.resolveTab(conn, tab)
+	tid, ok := s.resolveTab(ctx, conn, tab)
 	if !ok {
 		s.rpcErr(ctx, w, id, protocol.CodeInvalidParams, "unknown tab id", &protocol.ErrData{
 			Error:  "unknown tab id",
@@ -907,7 +918,7 @@ func (s *Server) handleFetch(ctx context.Context, w http.ResponseWriter, id json
 		return
 	}
 	hdrs := []byte(strings.TrimSpace(p.Headers))
-	out, err := routing.FetchPage(tid, rawURL, p.Method, hdrs, p.Body)
+	out, err := fetchPage(ctx, routing, tid, rawURL, p.Method, hdrs, p.Body)
 	if err != nil {
 		s.logger.Error("fetch failed", "err", err)
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "fetch failed", &protocol.ErrData{
@@ -959,7 +970,7 @@ func (s *Server) handleSnapshot(ctx context.Context, w http.ResponseWriter, id j
 		return
 	}
 	defer unlock()
-	tid, ok := s.resolveTab(conn, tab)
+	tid, ok := s.resolveTab(ctx, conn, tab)
 	if !ok {
 		s.rpcErr(ctx, w, id, protocol.CodeInvalidParams, "unknown tab id", &protocol.ErrData{
 			Error:  "unknown tab id",
@@ -972,7 +983,7 @@ func (s *Server) handleSnapshot(ctx context.Context, w http.ResponseWriter, id j
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "snapshot not supported", nil)
 		return
 	}
-	title, pageURL, text, refs, err := snapper.Snapshot(tid, browser.SnapshotOpts{
+	title, pageURL, text, refs, err := snapshot(ctx, snapper, tid, browser.SnapshotOpts{
 		InteractiveOnly: p.InteractiveOnly,
 		PruneEmpty:      p.PruneEmpty,
 		MaxDepth:        p.MaxDepth,
@@ -1026,7 +1037,7 @@ func (s *Server) handleNetworkRoute(ctx context.Context, w http.ResponseWriter, 
 		return
 	}
 	defer unlock()
-	tid, ok := s.resolveTab(conn, tab)
+	tid, ok := s.resolveTab(ctx, conn, tab)
 	if !ok {
 		s.rpcErr(ctx, w, id, protocol.CodeInvalidParams, "unknown tab id", nil)
 		return
@@ -1043,7 +1054,7 @@ func (s *Server) handleNetworkRoute(ctx context.Context, w http.ResponseWriter, 
 		ContentType: p.ContentType,
 		Status:      p.Status,
 	}
-	if err := rc.AppendNetworkRoute(tid, rule); err != nil {
+	if err := appendNetworkRoute(ctx, rc, tid, rule); err != nil {
 		s.logger.Error("network_route failed", "err", err)
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "network_route failed", &protocol.ErrData{Hint: s.cdpHint(err)})
 		return
@@ -1081,7 +1092,7 @@ func (s *Server) handleNetworkUnroute(ctx context.Context, w http.ResponseWriter
 		return
 	}
 	defer unlock()
-	tid, ok := s.resolveTab(conn, tab)
+	tid, ok := s.resolveTab(ctx, conn, tab)
 	if !ok {
 		s.rpcErr(ctx, w, id, protocol.CodeInvalidParams, "unknown tab id", nil)
 		return
@@ -1091,7 +1102,7 @@ func (s *Server) handleNetworkUnroute(ctx context.Context, w http.ResponseWriter
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "network_unroute not supported", nil)
 		return
 	}
-	if err := rc.RemoveNetworkRoutes(tid, p.URLPattern); err != nil {
+	if err := removeNetworkRoutes(ctx, rc, tid, p.URLPattern); err != nil {
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "network_unroute failed", &protocol.ErrData{Hint: s.cdpHint(err)})
 		return
 	}
@@ -1128,7 +1139,7 @@ func (s *Server) handleConsoleClear(ctx context.Context, w http.ResponseWriter, 
 		return
 	}
 	defer unlock()
-	tid, ok := s.resolveTab(conn, tab)
+	tid, ok := s.resolveTab(ctx, conn, tab)
 	if !ok {
 		s.rpcErr(ctx, w, id, protocol.CodeInvalidParams, "unknown tab id", nil)
 		return
@@ -1165,7 +1176,7 @@ func (s *Server) handleErrorsClear(ctx context.Context, w http.ResponseWriter, i
 		return
 	}
 	defer unlock()
-	tid, ok := s.resolveTab(conn, tab)
+	tid, ok := s.resolveTab(ctx, conn, tab)
 	if !ok {
 		s.rpcErr(ctx, w, id, protocol.CodeInvalidParams, "unknown tab id", nil)
 		return
@@ -1202,7 +1213,7 @@ func (s *Server) handleNetworkClear(ctx context.Context, w http.ResponseWriter, 
 		return
 	}
 	defer unlock()
-	tid, ok := s.resolveTab(conn, tab)
+	tid, ok := s.resolveTab(ctx, conn, tab)
 	if !ok {
 		s.rpcErr(ctx, w, id, protocol.CodeInvalidParams, "unknown tab id", nil)
 		return
@@ -1255,7 +1266,7 @@ func (s *Server) handleFill(ctx context.Context, w http.ResponseWriter, id json.
 		return
 	}
 	defer unlock()
-	tid, ok := s.resolveTab(conn, tab)
+	tid, ok := s.resolveTab(ctx, conn, tab)
 	if !ok {
 		s.rpcErr(ctx, w, id, protocol.CodeInvalidParams, "unknown tab id", &protocol.ErrData{
 			Error:  "unknown tab id",
@@ -1264,7 +1275,7 @@ func (s *Server) handleFill(ctx context.Context, w http.ResponseWriter, id json.
 		})
 		return
 	}
-	if err := conn.Fill(tid, sel, p.Text); err != nil {
+	if err := fill(ctx, conn, tid, sel, p.Text); err != nil {
 		s.logger.Error("fill failed", "err", err)
 		s.rpcErr(ctx, w, id, protocol.CodeServerError, "fill failed", &protocol.ErrData{
 			Error: "fill failed",
@@ -1279,13 +1290,13 @@ func (s *Server) handleFill(ctx context.Context, w http.ResponseWriter, id json.
 	s.rpcOK(ctx, w, id, protocol.FillResult{Tab: tab, Seq: seq})
 }
 
-func (s *Server) resolveTab(conn tabConn, tab string) (target.ID, bool) {
+func (s *Server) resolveTab(ctx context.Context, conn tabConn, tab string) (target.ID, bool) {
 	tid, ok := s.tabs.Lookup(tab)
 	if ok {
 		s.touchTabActivity(tid)
 		return tid, true
 	}
-	if targets, err := conn.PageTargets(); err == nil {
+	if targets, err := pageTargets(ctx, conn); err == nil {
 		s.syncTabsFromTargets(targets)
 		if tid, ok := s.tabs.Lookup(tab); ok {
 			s.touchTabActivity(tid)
@@ -1330,6 +1341,125 @@ type routeConn interface {
 	AppendNetworkRoute(tabID target.ID, rule browser.NetworkRouteRule) error
 	RemoveNetworkRoutes(tabID target.ID, urlPattern string) error
 	NetworkRouteCount(tabID target.ID) int
+}
+
+type pageTargetsContextConn interface {
+	PageTargetsContext(context.Context) ([]*target.Info, error)
+}
+type createPageTargetContextConn interface {
+	CreatePageTargetContext(context.Context, string, bool) (target.ID, error)
+}
+type closeTargetContextConn interface {
+	CloseTargetContext(context.Context, target.ID) error
+}
+type navigateContextConn interface {
+	NavigateContext(context.Context, target.ID, string) error
+}
+type reloadContextConn interface {
+	ReloadContext(context.Context, target.ID) error
+}
+type screenshotContextConn interface {
+	ScreenshotContext(context.Context, target.ID, string) ([]byte, string, error)
+}
+type evalContextConn interface {
+	EvalContext(context.Context, target.ID, string) (json.RawMessage, error)
+}
+type clickContextConn interface {
+	ClickContext(context.Context, target.ID, string) error
+}
+type fillContextConn interface {
+	FillContext(context.Context, target.ID, string, string) error
+}
+type fetchContextConn interface {
+	FetchPageContext(context.Context, target.ID, string, string, []byte, string) (json.RawMessage, error)
+}
+type snapshotContextConn interface {
+	SnapshotContext(context.Context, target.ID, browser.SnapshotOpts) (string, string, string, map[string]string, error)
+}
+type appendNetworkRouteContextConn interface {
+	AppendNetworkRouteContext(context.Context, target.ID, browser.NetworkRouteRule) error
+}
+type removeNetworkRoutesContextConn interface {
+	RemoveNetworkRoutesContext(context.Context, target.ID, string) error
+}
+
+func pageTargets(ctx context.Context, conn tabConn) ([]*target.Info, error) {
+	if c, ok := conn.(pageTargetsContextConn); ok {
+		return c.PageTargetsContext(ctx)
+	}
+	return conn.PageTargets()
+}
+func createPageTarget(ctx context.Context, conn tabConn, url string, silent bool) (target.ID, error) {
+	if c, ok := conn.(createPageTargetContextConn); ok {
+		return c.CreatePageTargetContext(ctx, url, silent)
+	}
+	return conn.CreatePageTarget(url, silent)
+}
+func closeTarget(ctx context.Context, conn tabConn, id target.ID) error {
+	if c, ok := conn.(closeTargetContextConn); ok {
+		return c.CloseTargetContext(ctx, id)
+	}
+	return conn.CloseTarget(id)
+}
+func navigate(ctx context.Context, conn tabConn, id target.ID, url string) error {
+	if c, ok := conn.(navigateContextConn); ok {
+		return c.NavigateContext(ctx, id, url)
+	}
+	return conn.Navigate(id, url)
+}
+func reload(ctx context.Context, conn tabConn, id target.ID) error {
+	if c, ok := conn.(reloadContextConn); ok {
+		return c.ReloadContext(ctx, id)
+	}
+	return conn.Reload(id)
+}
+func screenshot(ctx context.Context, conn tabConn, id target.ID, format string) ([]byte, string, error) {
+	if c, ok := conn.(screenshotContextConn); ok {
+		return c.ScreenshotContext(ctx, id, format)
+	}
+	return conn.Screenshot(id, format)
+}
+func eval(ctx context.Context, conn tabConn, id target.ID, script string) (json.RawMessage, error) {
+	if c, ok := conn.(evalContextConn); ok {
+		return c.EvalContext(ctx, id, script)
+	}
+	return conn.Eval(id, script)
+}
+func click(ctx context.Context, conn tabConn, id target.ID, selector string) error {
+	if c, ok := conn.(clickContextConn); ok {
+		return c.ClickContext(ctx, id, selector)
+	}
+	return conn.Click(id, selector)
+}
+func fill(ctx context.Context, conn tabConn, id target.ID, selector, text string) error {
+	if c, ok := conn.(fillContextConn); ok {
+		return c.FillContext(ctx, id, selector, text)
+	}
+	return conn.Fill(id, selector, text)
+}
+func fetchPage(ctx context.Context, conn fetchConn, id target.ID, url, method string, headers []byte, body string) (json.RawMessage, error) {
+	if c, ok := conn.(fetchContextConn); ok {
+		return c.FetchPageContext(ctx, id, url, method, headers, body)
+	}
+	return conn.FetchPage(id, url, method, headers, body)
+}
+func snapshot(ctx context.Context, conn snapshotConn, id target.ID, opts browser.SnapshotOpts) (string, string, string, map[string]string, error) {
+	if c, ok := conn.(snapshotContextConn); ok {
+		return c.SnapshotContext(ctx, id, opts)
+	}
+	return conn.Snapshot(id, opts)
+}
+func appendNetworkRoute(ctx context.Context, conn routeConn, id target.ID, rule browser.NetworkRouteRule) error {
+	if c, ok := conn.(appendNetworkRouteContextConn); ok {
+		return c.AppendNetworkRouteContext(ctx, id, rule)
+	}
+	return conn.AppendNetworkRoute(id, rule)
+}
+func removeNetworkRoutes(ctx context.Context, conn routeConn, id target.ID, pattern string) error {
+	if c, ok := conn.(removeNetworkRoutesContextConn); ok {
+		return c.RemoveNetworkRoutesContext(ctx, id, pattern)
+	}
+	return conn.RemoveNetworkRoutes(id, pattern)
 }
 
 // lockTab serializes CDP operations per short tab id (IMPLEMENTATION_PLAN §8.2).

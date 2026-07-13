@@ -54,8 +54,6 @@ type Server struct {
 	SkipBrowserAttach bool
 }
 
-const defaultOperationTimeout = 60 * time.Second
-
 // NewServer builds a daemon HTTP server with the given config (must pass Validate).
 func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 	if logger == nil {

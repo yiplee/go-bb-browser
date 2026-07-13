@@ -17,6 +17,7 @@ import (
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 	"github.com/yiplee/go-bb-browser/internal/state"
+	"github.com/yiplee/go-bb-browser/internal/timeout"
 )
 
 func errNilSession() error {
@@ -54,11 +55,20 @@ type tabPoolEntry struct {
 	cancel context.CancelFunc
 }
 
-const defaultCDPOperationTimeout = 60 * time.Second
-
 func runCDP(ctx context.Context, actions ...chromedp.Action) error {
-	opCtx, cancel := context.WithTimeout(ctx, defaultCDPOperationTimeout)
-	defer cancel()
+	return runCDPWithContext(ctx, context.Background(), actions...)
+}
+
+func runCDPWithContext(tabCtx, requestCtx context.Context, actions ...chromedp.Action) error {
+	if requestCtx == nil {
+		requestCtx = context.Background()
+	}
+	opCtx, cancel := context.WithTimeout(tabCtx, timeout.Operation)
+	stop := context.AfterFunc(requestCtx, cancel)
+	defer func() {
+		stop()
+		cancel()
+	}()
 	return chromedp.Run(opCtx, actions...)
 }
 
@@ -254,7 +264,7 @@ func (s *Session) Close() {
 
 // PingBrowser checks CDP connectivity with a lightweight Browser.getVersion call.
 func (s *Session) PingBrowser() error {
-	ctx, cancel := context.WithTimeout(context.Background(), defaultCDPOperationTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout.Operation)
 	defer cancel()
 	return s.PingBrowserContext(ctx)
 }
@@ -277,7 +287,7 @@ func (s *Session) PingBrowserContext(ctx context.Context) error {
 
 // PageTargets returns Target API targets filtered to page-like tabs.
 func (s *Session) PageTargets() ([]*target.Info, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), defaultCDPOperationTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout.Operation)
 	defer cancel()
 	return s.PageTargetsContext(ctx)
 }
@@ -318,6 +328,10 @@ func (s *Session) PageTargetsContext(ctx context.Context) ([]*target.Info, error
 // document.visibilityState is "visible". If zero or more than one target
 // qualifies (typical with multiple visible browser windows), it returns "", false.
 func (s *Session) DetectForegroundShort(snaps []state.TabSnapshot) (string, bool) {
+	return s.DetectForegroundShortContext(context.Background(), snaps)
+}
+
+func (s *Session) DetectForegroundShortContext(ctx context.Context, snaps []state.TabSnapshot) (string, bool) {
 	if s == nil || len(snaps) == 0 {
 		return "", false
 	}
@@ -331,7 +345,7 @@ func (s *Session) DetectForegroundShort(snaps []state.TabSnapshot) (string, bool
 			continue
 		}
 		var vis string
-		if err := runCDP(tabCtx, chromedp.Evaluate(`document.visibilityState`, &vis)); err != nil {
+		if err := runCDPWithContext(tabCtx, ctx, chromedp.Evaluate(`document.visibilityState`, &vis)); err != nil {
 			continue
 		}
 		if vis != "visible" {
@@ -397,6 +411,10 @@ func (s *Session) tabChromeCtx(tabID target.ID) (context.Context, error) {
 // CreatePageTarget opens a new page target (INV-7: works when zero tabs exist).
 // When silent is true, the tab is created in the background without focusing the browser window.
 func (s *Session) CreatePageTarget(initialURL string, silent bool) (target.ID, error) {
+	return s.CreatePageTargetContext(context.Background(), initialURL, silent)
+}
+
+func (s *Session) CreatePageTargetContext(ctx context.Context, initialURL string, silent bool) (target.ID, error) {
 	if s == nil {
 		return "", fmt.Errorf("browser session is nil")
 	}
@@ -408,8 +426,10 @@ func (s *Session) CreatePageTarget(initialURL string, silent bool) (target.ID, e
 	if silent {
 		params = params.WithBackground(true).WithFocus(false)
 	}
-	opCtx, cancel := context.WithTimeout(s.ctx, defaultCDPOperationTimeout)
+	opCtx, cancel := context.WithTimeout(s.ctx, timeout.Operation)
+	stop := context.AfterFunc(ctx, cancel)
 	defer cancel()
+	defer stop()
 	id, err := params.Do(cdp.WithExecutor(opCtx, ex))
 	if err != nil {
 		return "", err
@@ -419,6 +439,10 @@ func (s *Session) CreatePageTarget(initialURL string, silent bool) (target.ID, e
 
 // CloseTarget closes a page target by CDP id.
 func (s *Session) CloseTarget(id target.ID) error {
+	return s.CloseTargetContext(context.Background(), id)
+}
+
+func (s *Session) CloseTargetContext(ctx context.Context, id target.ID) error {
 	if s == nil {
 		return fmt.Errorf("browser session is nil")
 	}
@@ -437,13 +461,19 @@ func (s *Session) CloseTarget(id target.ID) error {
 	if ex == nil {
 		return fmt.Errorf("browser not available in context")
 	}
-	opCtx, cancel := context.WithTimeout(s.ctx, defaultCDPOperationTimeout)
+	opCtx, cancel := context.WithTimeout(s.ctx, timeout.Operation)
+	stop := context.AfterFunc(ctx, cancel)
 	defer cancel()
+	defer stop()
 	return target.CloseTarget(id).Do(cdp.WithExecutor(opCtx, ex))
 }
 
 // Navigate navigates the given page target to url.
 func (s *Session) Navigate(tabID target.ID, url string) error {
+	return s.NavigateContext(context.Background(), tabID, url)
+}
+
+func (s *Session) NavigateContext(ctx context.Context, tabID target.ID, url string) error {
 	if s == nil {
 		return fmt.Errorf("browser session is nil")
 	}
@@ -451,11 +481,15 @@ func (s *Session) Navigate(tabID target.ID, url string) error {
 	if err != nil {
 		return err
 	}
-	return runCDP(tabCtx, chromedp.Navigate(url))
+	return runCDPWithContext(tabCtx, ctx, chromedp.Navigate(url))
 }
 
 // Reload performs a full navigation reload for the page target.
 func (s *Session) Reload(tabID target.ID) error {
+	return s.ReloadContext(context.Background(), tabID)
+}
+
+func (s *Session) ReloadContext(ctx context.Context, tabID target.ID) error {
 	if s == nil {
 		return fmt.Errorf("browser session is nil")
 	}
@@ -463,11 +497,15 @@ func (s *Session) Reload(tabID target.ID) error {
 	if err != nil {
 		return err
 	}
-	return runCDP(tabCtx, chromedp.Reload())
+	return runCDPWithContext(tabCtx, ctx, chromedp.Reload())
 }
 
 // Screenshot captures the viewport; format is "png" (default) or "jpeg".
 func (s *Session) Screenshot(tabID target.ID, format string) ([]byte, string, error) {
+	return s.ScreenshotContext(context.Background(), tabID, format)
+}
+
+func (s *Session) ScreenshotContext(ctx context.Context, tabID target.ID, format string) ([]byte, string, error) {
 	if s == nil {
 		return nil, "", fmt.Errorf("browser session is nil")
 	}
@@ -478,7 +516,7 @@ func (s *Session) Screenshot(tabID target.ID, format string) ([]byte, string, er
 	format = strings.ToLower(strings.TrimSpace(format))
 	if format == "jpeg" || format == "jpg" {
 		var buf []byte
-		err := runCDP(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		err := runCDPWithContext(tabCtx, ctx, chromedp.ActionFunc(func(ctx context.Context) error {
 			var err error
 			buf, err = page.CaptureScreenshot().
 				WithFormat(page.CaptureScreenshotFormatJpeg).
@@ -489,7 +527,7 @@ func (s *Session) Screenshot(tabID target.ID, format string) ([]byte, string, er
 		return buf, "image/jpeg", err
 	}
 	var buf []byte
-	err = runCDP(tabCtx, chromedp.CaptureScreenshot(&buf))
+	err = runCDPWithContext(tabCtx, ctx, chromedp.CaptureScreenshot(&buf))
 	return buf, "image/png", err
 }
 
@@ -497,11 +535,19 @@ func (s *Session) Screenshot(tabID target.ID, format string) ([]byte, string, er
 // awaitPromise is true so async expressions (including site adapters) resolve to
 // JSON-serializable values instead of a Promise handle.
 func (s *Session) Eval(tabID target.ID, script string) (json.RawMessage, error) {
-	return s.EvalAwait(tabID, script, true)
+	return s.EvalAwaitContext(context.Background(), tabID, script, true)
+}
+
+func (s *Session) EvalContext(ctx context.Context, tabID target.ID, script string) (json.RawMessage, error) {
+	return s.EvalAwaitContext(ctx, tabID, script, true)
 }
 
 // EvalAwait runs script; when awaitPromise is true, resolves Promises (same as bb-browser fetch).
 func (s *Session) EvalAwait(tabID target.ID, script string, awaitPromise bool) (json.RawMessage, error) {
+	return s.EvalAwaitContext(context.Background(), tabID, script, awaitPromise)
+}
+
+func (s *Session) EvalAwaitContext(ctx context.Context, tabID target.ID, script string, awaitPromise bool) (json.RawMessage, error) {
 	if s == nil {
 		return nil, errNilSession()
 	}
@@ -510,7 +556,7 @@ func (s *Session) EvalAwait(tabID target.ID, script string, awaitPromise bool) (
 		return nil, err
 	}
 	var raw []byte
-	err = runCDP(tabCtx, chromedp.Evaluate(script, &raw, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
+	err = runCDPWithContext(tabCtx, ctx, chromedp.Evaluate(script, &raw, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
 		return p.WithAwaitPromise(awaitPromise).WithReturnByValue(true)
 	}))
 	if err != nil {
@@ -521,6 +567,10 @@ func (s *Session) EvalAwait(tabID target.ID, script string, awaitPromise bool) (
 
 // Click performs a click on the first node matching selector.
 func (s *Session) Click(tabID target.ID, selector string) error {
+	return s.ClickContext(context.Background(), tabID, selector)
+}
+
+func (s *Session) ClickContext(ctx context.Context, tabID target.ID, selector string) error {
 	if s == nil {
 		return fmt.Errorf("browser session is nil")
 	}
@@ -528,11 +578,15 @@ func (s *Session) Click(tabID target.ID, selector string) error {
 	if err != nil {
 		return err
 	}
-	return runCDP(tabCtx, chromedp.Click(selector, chromedp.ByQuery))
+	return runCDPWithContext(tabCtx, ctx, chromedp.Click(selector, chromedp.ByQuery))
 }
 
 // Fill sets the value of an input/textarea (see chromedp.SetValue).
 func (s *Session) Fill(tabID target.ID, selector, text string) error {
+	return s.FillContext(context.Background(), tabID, selector, text)
+}
+
+func (s *Session) FillContext(ctx context.Context, tabID target.ID, selector, text string) error {
 	if s == nil {
 		return fmt.Errorf("browser session is nil")
 	}
@@ -540,5 +594,5 @@ func (s *Session) Fill(tabID target.ID, selector, text string) error {
 	if err != nil {
 		return err
 	}
-	return runCDP(tabCtx, chromedp.SetValue(selector, text, chromedp.ByQuery))
+	return runCDPWithContext(tabCtx, ctx, chromedp.SetValue(selector, text, chromedp.ByQuery))
 }

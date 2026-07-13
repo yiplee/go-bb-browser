@@ -89,12 +89,12 @@ func (s *Server) reconcileIdleFromLog(snaps []state.TabSnapshot) {
 	}
 }
 
-func (s *Server) closeTabByShort(tab string) error {
+func (s *Server) closeTabByShort(ctx context.Context, tab string) error {
 	conn := s.tabConn()
 	if conn == nil {
 		return errTabCloseNoConn
 	}
-	unlock, ok := s.lockTab(context.Background(), tab)
+	unlock, ok := s.lockTab(ctx, tab)
 	if !ok {
 		return context.DeadlineExceeded
 	}
@@ -102,7 +102,7 @@ func (s *Server) closeTabByShort(tab string) error {
 
 	tid, ok := s.tabs.Lookup(tab)
 	if !ok {
-		if targets, err := conn.PageTargets(); err == nil {
+		if targets, err := pageTargets(ctx, conn); err == nil {
 			s.syncTabsFromTargets(targets)
 			tid, ok = s.tabs.Lookup(tab)
 		}
@@ -110,10 +110,10 @@ func (s *Server) closeTabByShort(tab string) error {
 	if !ok {
 		return errTabCloseUnknownID
 	}
-	if err := conn.CloseTarget(tid); err != nil {
+	if err := closeTarget(ctx, conn, tid); err != nil {
 		return err
 	}
-	targets, ptErr := conn.PageTargets()
+	targets, ptErr := pageTargets(ctx, conn)
 	if ptErr == nil {
 		s.syncTabsFromTargets(targets)
 		s.syncObservation(conn, targets)
@@ -165,7 +165,7 @@ func (s *Server) closeExpiredTabs(ctx context.Context) {
 			s.forgetTabManaged(tid)
 			continue
 		}
-		if err := s.closeTabByShort(short); err != nil {
+		if err := s.closeTabByShort(ctx, short); err != nil {
 			if errors.Is(err, errTabCloseUnknownID) {
 				s.forgetTabManaged(tid)
 				continue
