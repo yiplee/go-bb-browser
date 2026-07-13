@@ -481,7 +481,7 @@ func (s *Server) handleGoto(ctx context.Context, w http.ResponseWriter, id json.
 	}
 	unlock, ok := s.lockTab(ctx, tab)
 	if !ok {
-		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", nil)
+		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", tabLockTimeoutData())
 		return
 	}
 	defer unlock()
@@ -531,7 +531,7 @@ func (s *Server) handleReload(ctx context.Context, w http.ResponseWriter, id jso
 	}
 	unlock, ok := s.lockTab(ctx, tab)
 	if !ok {
-		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", nil)
+		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", tabLockTimeoutData())
 		return
 	}
 	defer unlock()
@@ -626,7 +626,7 @@ func (s *Server) handleScreenshot(ctx context.Context, w http.ResponseWriter, id
 	}
 	unlock, ok := s.lockTab(ctx, tab)
 	if !ok {
-		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", nil)
+		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", tabLockTimeoutData())
 		return
 	}
 	defer unlock()
@@ -689,7 +689,7 @@ func (s *Server) handleEval(ctx context.Context, w http.ResponseWriter, id json.
 	}
 	unlock, ok := s.lockTab(ctx, tab)
 	if !ok {
-		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", nil)
+		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", tabLockTimeoutData())
 		return
 	}
 	defer unlock()
@@ -752,7 +752,7 @@ func (s *Server) handleClick(ctx context.Context, w http.ResponseWriter, id json
 	}
 	unlock, ok := s.lockTab(ctx, tab)
 	if !ok {
-		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", nil)
+		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", tabLockTimeoutData())
 		return
 	}
 	defer unlock()
@@ -840,7 +840,7 @@ func (s *Server) handleObsQuery(ctx context.Context, w http.ResponseWriter, id j
 	}
 	unlock, ok := s.lockTab(ctx, tab)
 	if !ok {
-		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", nil)
+		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", tabLockTimeoutData())
 		return
 	}
 	defer unlock()
@@ -897,7 +897,7 @@ func (s *Server) handleFetch(ctx context.Context, w http.ResponseWriter, id json
 	}
 	unlock, ok := s.lockTab(ctx, tab)
 	if !ok {
-		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", nil)
+		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", tabLockTimeoutData())
 		return
 	}
 	defer unlock()
@@ -966,7 +966,7 @@ func (s *Server) handleSnapshot(ctx context.Context, w http.ResponseWriter, id j
 	}
 	unlock, ok := s.lockTab(ctx, tab)
 	if !ok {
-		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", nil)
+		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", tabLockTimeoutData())
 		return
 	}
 	defer unlock()
@@ -1033,7 +1033,7 @@ func (s *Server) handleNetworkRoute(ctx context.Context, w http.ResponseWriter, 
 	}
 	unlock, ok := s.lockTab(ctx, tab)
 	if !ok {
-		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", nil)
+		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", tabLockTimeoutData())
 		return
 	}
 	defer unlock()
@@ -1088,7 +1088,7 @@ func (s *Server) handleNetworkUnroute(ctx context.Context, w http.ResponseWriter
 	}
 	unlock, ok := s.lockTab(ctx, tab)
 	if !ok {
-		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", nil)
+		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", tabLockTimeoutData())
 		return
 	}
 	defer unlock()
@@ -1135,7 +1135,7 @@ func (s *Server) handleConsoleClear(ctx context.Context, w http.ResponseWriter, 
 	}
 	unlock, ok := s.lockTab(ctx, tab)
 	if !ok {
-		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", nil)
+		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", tabLockTimeoutData())
 		return
 	}
 	defer unlock()
@@ -1172,7 +1172,7 @@ func (s *Server) handleErrorsClear(ctx context.Context, w http.ResponseWriter, i
 	}
 	unlock, ok := s.lockTab(ctx, tab)
 	if !ok {
-		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", nil)
+		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", tabLockTimeoutData())
 		return
 	}
 	defer unlock()
@@ -1209,7 +1209,7 @@ func (s *Server) handleNetworkClear(ctx context.Context, w http.ResponseWriter, 
 	}
 	unlock, ok := s.lockTab(ctx, tab)
 	if !ok {
-		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", nil)
+		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", tabLockTimeoutData())
 		return
 	}
 	defer unlock()
@@ -1262,7 +1262,7 @@ func (s *Server) handleFill(ctx context.Context, w http.ResponseWriter, id json.
 	}
 	unlock, ok := s.lockTab(ctx, tab)
 	if !ok {
-		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", nil)
+		s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", tabLockTimeoutData())
 		return
 	}
 	defer unlock()
@@ -1381,6 +1381,13 @@ type appendNetworkRouteContextConn interface {
 }
 type removeNetworkRoutesContextConn interface {
 	RemoveNetworkRoutesContext(context.Context, target.ID, string) error
+}
+
+func tabLockTimeoutData() *protocol.ErrData {
+	return &protocol.ErrData{
+		Error: "tab operation lock deadline exceeded",
+		Hint:  "another operation is still running for this tab",
+	}
 }
 
 func pageTargets(ctx context.Context, conn tabConn) ([]*target.Info, error) {
