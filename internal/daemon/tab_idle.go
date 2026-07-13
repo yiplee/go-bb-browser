@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/chromedp/cdproto/target"
@@ -12,6 +13,7 @@ import (
 var (
 	errTabCloseNoConn    = errors.New("browser session not ready")
 	errTabCloseUnknownID = errors.New("unknown tab id")
+	errTabLockTimeout    = fmt.Errorf("tab lock timeout: %w", context.DeadlineExceeded)
 )
 
 func (s *Server) markTabManaged(tid target.ID, short, openURL string, silent bool) {
@@ -96,7 +98,7 @@ func (s *Server) closeTabByShort(ctx context.Context, tab string) error {
 	}
 	unlock, ok := s.lockTab(ctx, tab)
 	if !ok {
-		return context.DeadlineExceeded
+		return errTabLockTimeout
 	}
 	defer unlock()
 

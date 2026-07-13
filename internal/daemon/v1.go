@@ -589,6 +589,8 @@ func (s *Server) handleTabClose(ctx context.Context, w http.ResponseWriter, id j
 			})
 		case errors.Is(err, errTabCloseNoConn):
 			s.rpcErr(ctx, w, id, protocol.CodeServerError, "browser session not ready", nil)
+		case errors.Is(err, errTabLockTimeout):
+			s.rpcErr(ctx, w, id, protocol.CodeServerError, "request timed out", tabLockTimeoutData())
 		default:
 			s.logger.Error("tab_close failed", "err", err)
 			s.rpcErr(ctx, w, id, protocol.CodeServerError, "failed to close tab", &protocol.ErrData{
