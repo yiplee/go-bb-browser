@@ -2,42 +2,43 @@ package daemon
 
 import (
 	"context"
-	"time"
 
-	"github.com/chromedp/cdproto/target"
 	"github.com/yiplee/go-bb-browser/pkg/protocol"
 )
 
-const browserHealthTimeout = 3 * time.Second
-
-func (s *Server) healthResult(ctx context.Context) protocol.HealthResult {
+func (s *Server) healthResult(strict bool) protocol.HealthResult {
 	return protocol.HealthResult{
 		Status:  "ok",
-		Browser: s.browserHealthField(ctx),
+		Browser: s.browserHealthField(strict),
 	}
 }
 
-func (s *Server) browserHealthField(ctx context.Context) string {
+func (s *Server) browserHealthField(strict bool) string {
 	if s.SkipBrowserAttach {
 		return protocol.HealthBrowserSkipped
 	}
+	// Test hooks have no supervisor; retain their lightweight PingBrowser behavior.
 	if s.tabHook != nil {
-		return pingTabConnContext(ctx, s.tabHook)
+		if p, ok := s.tabHook.(interface{ PingBrowser() error }); ok && p.PingBrowser() != nil {
+			return protocol.HealthBrowserDisconnected
+		}
+		return protocol.HealthBrowserConnected
 	}
-	if err := s.ensureBrowserSession(ctx); err != nil {
+	s.tabMu.RLock()
+	state := s.browserState
+	live := s.tabLive
+	s.tabMu.RUnlock()
+	if live == nil || state == sessionFailed || state == sessionStarting {
 		return protocol.HealthBrowserDisconnected
 	}
-	conn := s.tabConn()
-	if conn == nil {
+	if strict && state == sessionSuspect {
 		return protocol.HealthBrowserDisconnected
 	}
-	if field := pingTabConnContext(ctx, conn); field == protocol.HealthBrowserConnected {
-		s.markBrowserOK()
-		return field
-	}
-	return protocol.HealthBrowserDisconnected
+	return protocol.HealthBrowserConnected
 }
 
+// pingTabConnContext is retained for injected backends and focused tests. Production
+// health routes use supervisor state and never call it.
 func pingTabConnContext(ctx context.Context, conn tabConn) string {
 	if p, ok := conn.(interface{ PingBrowserContext(context.Context) error }); ok {
 		if err := p.PingBrowserContext(ctx); err != nil {
@@ -49,24 +50,6 @@ func pingTabConnContext(ctx context.Context, conn tabConn) string {
 		if err := p.PingBrowser(); err != nil {
 			return protocol.HealthBrowserDisconnected
 		}
-		return protocol.HealthBrowserConnected
-	}
-	if p, ok := conn.(interface {
-		PageTargetsContext(context.Context) ([]*target.Info, error)
-	}); ok {
-		if _, err := p.PageTargetsContext(ctx); err != nil {
-			return protocol.HealthBrowserDisconnected
-		}
-		return protocol.HealthBrowserConnected
-	}
-	if _, err := conn.PageTargets(); err != nil {
-		return protocol.HealthBrowserDisconnected
 	}
 	return protocol.HealthBrowserConnected
-}
-
-func (s *Server) markBrowserOK() {
-	s.tabMu.Lock()
-	s.lastBrowserOK = time.Now()
-	s.tabMu.Unlock()
 }

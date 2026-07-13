@@ -18,6 +18,11 @@ type TabRegistry struct {
 	selected      string // short id; empty if none
 }
 
+type RemovedTab struct {
+	TargetID target.ID
+	ShortID  string
+}
+
 func NewTabRegistry() *TabRegistry {
 	return &TabRegistry{
 		targetToShort: make(map[target.ID]string),
@@ -28,6 +33,13 @@ func NewTabRegistry() *TabRegistry {
 // SyncPageTargets updates registration from the current set of page-type targets.
 // Targets that disappeared are removed (INV-6: release short id and clear association).
 func (r *TabRegistry) SyncPageTargets(infos []*target.Info) []TabSnapshot {
+	tabs, _ := r.SyncPageTargetsDetailed(infos)
+	return tabs
+}
+
+// SyncPageTargetsDetailed also reports removals so callers can clear every
+// target-scoped resource through one lifecycle path (INV-6).
+func (r *TabRegistry) SyncPageTargetsDetailed(infos []*target.Info) ([]TabSnapshot, []RemovedTab) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -39,8 +51,10 @@ func (r *TabRegistry) SyncPageTargets(infos []*target.Info) []TabSnapshot {
 		present[info.TargetID] = struct{}{}
 	}
 
-	for id := range r.targetToShort {
+	var removed []RemovedTab
+	for id, short := range r.targetToShort {
 		if _, ok := present[id]; !ok {
+			removed = append(removed, RemovedTab{TargetID: id, ShortID: short})
 			r.removeLocked(id)
 		}
 	}
@@ -67,7 +81,19 @@ func (r *TabRegistry) SyncPageTargets(infos []*target.Info) []TabSnapshot {
 			URL:      tabURL(infos, id),
 		})
 	}
-	return out
+	return out, removed
+}
+
+// RemoveTarget removes one target and returns its former short id.
+func (r *TabRegistry) RemoveTarget(id target.ID) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	short, ok := r.targetToShort[id]
+	if !ok {
+		return "", false
+	}
+	r.removeLocked(id)
+	return short, true
 }
 
 // RegisterPageTarget assigns a short id for a CDP target id without syncing from the browser.

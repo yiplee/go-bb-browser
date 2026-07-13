@@ -1,6 +1,9 @@
 package daemon
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestConfigValidate_DebuggerRequired(t *testing.T) {
 	c := Config{ListenAddr: "127.0.0.1:0"}
@@ -49,6 +52,24 @@ func TestConfigValidate_DefaultListenAndBodyLimit(t *testing.T) {
 	}
 	if c.MaxLogBytes != DefaultMaxLogBytes {
 		t.Fatalf("max log bytes: got %d want %d", c.MaxLogBytes, DefaultMaxLogBytes)
+	}
+	if c.CDPWatchdogInterval != DefaultCDPWatchdogInterval || c.CDPWatchdogTimeout != DefaultCDPWatchdogTimeout || c.CDPWatchdogFailures != DefaultCDPWatchdogFailures {
+		t.Fatalf("watchdog defaults: interval=%s timeout=%s failures=%d", c.CDPWatchdogInterval, c.CDPWatchdogTimeout, c.CDPWatchdogFailures)
+	}
+}
+
+func TestConfigValidateWatchdogAndObserverBounds(t *testing.T) {
+	for name, c := range map[string]Config{
+		"negative interval":      {DebuggerURL: "127.0.0.1:9222", CDPWatchdogInterval: -time.Second},
+		"timeout over interval":  {DebuggerURL: "127.0.0.1:9222", CDPWatchdogInterval: time.Second, CDPWatchdogTimeout: 2 * time.Second},
+		"negative failures":      {DebuggerURL: "127.0.0.1:9222", CDPWatchdogFailures: -1},
+		"negative observer idle": {DebuggerURL: "127.0.0.1:9222", ObserverIdleTimeout: -time.Second},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := c.Validate(); err == nil {
+				t.Fatal("expected validation error")
+			}
+		})
 	}
 }
 

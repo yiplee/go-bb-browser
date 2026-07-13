@@ -18,7 +18,7 @@ type obsSink struct {
 
 var _ browser.ObsRecorder = (*obsSink)(nil)
 
-func (o *obsSink) nextSeq() (uint64, bool) {
+func (o *obsSink) NextSeq() (uint64, bool) {
 	if o == nil || o.store == nil {
 		return 0, false
 	}
@@ -32,34 +32,22 @@ func (o *obsSink) nextSeq() (uint64, bool) {
 	return n, true
 }
 
-func (o *obsSink) RecordNetwork(id target.ID, data json.RawMessage) {
+func (o *obsSink) RecordNetwork(id target.ID, seq uint64, data json.RawMessage) {
 	if o == nil || o.obs == nil {
-		return
-	}
-	seq, ok := o.nextSeq()
-	if !ok {
 		return
 	}
 	o.obs.PushNetwork(id, seq, data)
 }
 
-func (o *obsSink) RecordConsole(id target.ID, data json.RawMessage) {
+func (o *obsSink) RecordConsole(id target.ID, seq uint64, data json.RawMessage) {
 	if o == nil || o.obs == nil {
-		return
-	}
-	seq, ok := o.nextSeq()
-	if !ok {
 		return
 	}
 	o.obs.PushConsole(id, seq, data)
 }
 
-func (o *obsSink) RecordError(id target.ID, data json.RawMessage) {
+func (o *obsSink) RecordError(id target.ID, seq uint64, data json.RawMessage) {
 	if o == nil || o.obs == nil {
-		return
-	}
-	seq, ok := o.nextSeq()
-	if !ok {
 		return
 	}
 	o.obs.PushError(id, seq, data)

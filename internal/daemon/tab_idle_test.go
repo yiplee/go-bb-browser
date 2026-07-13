@@ -55,6 +55,40 @@ func drainRPCLog(t *testing.T, srv *Server) {
 	srv.auditWG.Wait()
 }
 
+func TestExternalTargetRemovalClearsAllDaemonState(t *testing.T) {
+	srv := newIdleTestServer(&fakeConn{}, time.Minute)
+	tid := target.ID("ABCDEF123456")
+	short := srv.tabs.RegisterPageTarget(tid)
+	srv.tabIdle.MarkManaged(tid)
+	seq, err := srv.store.NextSeq()
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.obsStore.PushNetwork(tid, seq, json.RawMessage(`{"url":"https://example.com"}`))
+	unlock, ok := srv.lockTab(context.Background(), short)
+	if !ok {
+		t.Fatal("lock failed")
+	}
+	unlock()
+
+	srv.removeTargetState(tid)
+	if _, ok := srv.tabs.Lookup(short); ok {
+		t.Fatal("registry entry retained")
+	}
+	if _, ok := srv.tabIdle.Snapshot()[tid]; ok {
+		t.Fatal("idle state retained")
+	}
+	if events, _, _ := srv.obsStore.QueryNetwork(tid, 0); len(events) != 0 {
+		t.Fatalf("observation events retained: %#v", events)
+	}
+	srv.tabMuOps.Lock()
+	_, lockRetained := srv.tabCDPLocks[short]
+	srv.tabMuOps.Unlock()
+	if lockRetained {
+		t.Fatal("keyed tab lock retained")
+	}
+}
+
 func TestTabIdlePreExistingTabNotClosed(t *testing.T) {
 	fc := &fakeConn{infos: []*target.Info{
 		{TargetID: "ABCDEF123456", Type: "page", Title: "t", URL: "https://ex"},

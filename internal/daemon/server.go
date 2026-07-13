@@ -10,10 +10,9 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/chromedp/cdproto/target"
-	"github.com/yiplee/go-bb-browser/internal/browser"
 	"github.com/yiplee/go-bb-browser/internal/state"
 	"github.com/yiplee/go-bb-browser/internal/store"
 	"github.com/yiplee/go-bb-browser/pkg/protocol"
@@ -32,18 +31,22 @@ type Server struct {
 	tabHook  tabConn // optional: tests inject fake CDP
 	sessDone func()  // releases browser session references on shutdown (does not close Chrome)
 
-	// lastBrowserOK is updated after a successful CDP health probe (see ensureBrowserSession).
-	lastBrowserOK time.Time
+	browserState     sessionState
+	browserFailures  int
+	browserLastProbe time.Time
+	probeTrigger     chan struct{}
+	probeInFlight    atomic.Bool
 
 	obsStore *state.TabObsStore
 	obsSink  *obsSink
 	tabIdle  *state.TabIdleTracker
 
 	tabMuOps    sync.Mutex
-	tabCDPLocks map[string]chan struct{} // per short tab id; one token means unlocked
+	tabCDPLocks map[string]*tabLockEntry
 
-	// auditWG tracks in-flight async audit writes so they are drained before the store closes.
-	auditWG sync.WaitGroup
+	auditCh   chan store.LogRecord
+	auditDone chan struct{}
+	auditWG   sync.WaitGroup
 
 	// CDP loss triggers fatal exit (supervisor restart) instead of in-process reconnect.
 	fatalOnce sync.Once
@@ -61,12 +64,15 @@ func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 	}
 	obsStore := state.NewTabObsStore()
 	s := &Server{
-		cfg:      cfg,
-		logger:   logger,
-		mux:      http.NewServeMux(),
-		tabs:     state.NewTabRegistry(),
-		obsStore: obsStore,
-		tabIdle:  state.NewTabIdleTracker(),
+		cfg:          cfg,
+		logger:       logger,
+		mux:          http.NewServeMux(),
+		tabs:         state.NewTabRegistry(),
+		obsStore:     obsStore,
+		tabIdle:      state.NewTabIdleTracker(),
+		probeTrigger: make(chan struct{}, 1),
+		auditCh:      make(chan store.LogRecord, 256),
+		auditDone:    make(chan struct{}),
 	}
 	stateDir := effectiveStateDir(cfg)
 	if strings.TrimSpace(cfg.StateDir) == stateDirDisabled {
@@ -78,23 +84,15 @@ func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 	}
 	s.store = st
 	s.obsSink = &obsSink{store: st, obs: obsStore, logger: logger}
+	go s.runAuditWriter()
 	s.routes()
 	return s, nil
 }
 
-// syncObservation aligns CDP tab observers and clears buffers for removed targets (Phase 3).
-func (s *Server) syncObservation(conn tabConn, infos []*target.Info) {
-	if s.obsStore == nil {
-		return
-	}
-	if sess, ok := conn.(*browser.Session); ok && s.obsSink != nil {
-		sess.SyncObservers(sess.Context(), infos, s.obsSink, s.logger)
-	}
-	s.obsStore.SyncPresence(infos)
-}
-
 func (s *Server) routes() {
 	s.mux.HandleFunc("/health", s.handleHealthRoute)
+	s.mux.HandleFunc("/live", s.handleLiveRoute)
+	s.mux.HandleFunc("/ready", s.handleReadyRoute)
 	s.mux.HandleFunc("/v1", s.handleV1)
 }
 
@@ -121,9 +119,36 @@ func (s *Server) handleHealthRoute(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHealthGet(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), browserHealthTimeout)
-	defer cancel()
-	result := s.healthResult(ctx)
+	result := s.healthResult(false)
+	s.writeHealthResult(w, result)
+}
+
+func (s *Server) handleReadyRoute(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.writeHealthResult(w, s.healthResult(true))
+}
+
+func (s *Server) handleLiveRoute(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	b, err := json.Marshal(protocol.LivenessResult{Status: "ok"})
+	if err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(b)
+}
+
+func (s *Server) writeHealthResult(w http.ResponseWriter, result protocol.HealthResult) {
 	b, err := json.Marshal(result)
 	if err != nil {
 		s.logger.Error("health json encode failed", "err", err)
@@ -149,7 +174,8 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 
 	defer func() {
 		if s.store != nil {
-			s.auditWG.Wait() // drain async audit writes before closing the store
+			close(s.auditCh)
+			<-s.auditDone
 			_ = s.store.Close()
 		}
 	}()
@@ -199,6 +225,9 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	if s.cfg.TabIdleTimeout > 0 {
 		go s.runTabIdleSweeper(runCtx)
 	}
+	if s.cfg.ObserverIdleTimeout > 0 {
+		go s.runObserverSweeper(runCtx)
+	}
 
 	select {
 	case <-ctx.Done():
@@ -217,5 +246,15 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		return err
 	case err := <-errCh:
 		return err
+	}
+}
+
+func (s *Server) runAuditWriter() {
+	defer close(s.auditDone)
+	for rec := range s.auditCh {
+		if err := s.store.AppendRPC(rec); err != nil && s.logger != nil {
+			s.logger.Warn("append rpc log failed", "err", err, "action", rec.Action)
+		}
+		s.auditWG.Done()
 	}
 }

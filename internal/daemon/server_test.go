@@ -119,9 +119,46 @@ func TestHealthBrowserDisconnected(t *testing.T) {
 	}
 }
 
+func TestLiveReadyAndHealthUseCachedSupervisorState(t *testing.T) {
+	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0", StateDir: stateDirDisabled}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fc := &fakeConn{infos: []*target.Info{{TargetID: "T1", Type: "page"}}}
+	srv.tabLive = fc
+	srv.browserState = sessionSuspect
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	for path, want := range map[string]int{
+		"/live":   http.StatusOK,
+		"/health": http.StatusOK,
+		"/ready":  http.StatusServiceUnavailable,
+	} {
+		res, err := http.Get(ts.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != want {
+			t.Errorf("%s status = %d, want %d", path, res.StatusCode, want)
+		}
+	}
+	if got := fc.pageCalls.Load(); got != 0 {
+		t.Fatalf("health routes enumerated targets %d times", got)
+	}
+	if got := fc.pingCalls.Load(); got != 0 {
+		t.Fatalf("health routes pinged browser %d times", got)
+	}
+}
+
 type deadlineHealthConn struct{ fakeConn }
 
-func (deadlineHealthConn) PingBrowserContext(ctx context.Context) error {
+func (*deadlineHealthConn) PingBrowserContext(ctx context.Context) error {
 	<-ctx.Done()
 	return ctx.Err()
 }

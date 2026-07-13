@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/chromedp/cdproto/target"
+	"github.com/yiplee/go-bb-browser/internal/browser"
 	"github.com/yiplee/go-bb-browser/internal/state"
 )
 
@@ -35,9 +36,31 @@ func (s *Server) forgetTabManaged(tid target.ID) {
 }
 
 func (s *Server) syncTabsFromTargets(infos []*target.Info) []state.TabSnapshot {
-	snaps := s.tabs.SyncPageTargets(infos)
+	snaps, removed := s.tabs.SyncPageTargetsDetailed(infos)
+	for _, tab := range removed {
+		s.clearRemovedTarget(tab.TargetID, tab.ShortID)
+	}
 	s.syncTabIdlePresence(snaps)
 	return snaps
+}
+
+func (s *Server) clearRemovedTarget(tid target.ID, short string) {
+	if s.obsStore != nil {
+		s.obsStore.ClearTarget(tid)
+	}
+	s.forgetTabManaged(tid)
+	s.forgetTabLock(short)
+	if sess, ok := s.tabConn().(*browser.Session); ok {
+		sess.ForgetTarget(tid)
+	}
+}
+
+func (s *Server) removeTargetState(tid target.ID) {
+	short, ok := s.tabs.RemoveTarget(tid)
+	if !ok {
+		return
+	}
+	s.clearRemovedTarget(tid, short)
 }
 
 func (s *Server) syncTabIdlePresence(snaps []state.TabSnapshot) {
@@ -115,12 +138,9 @@ func (s *Server) closeTabByShort(ctx context.Context, tab string) error {
 	if err := closeTarget(ctx, conn, tid); err != nil {
 		return err
 	}
-	targets, ptErr := pageTargets(ctx, conn)
-	if ptErr == nil {
-		s.syncTabsFromTargets(targets)
-		s.syncObservation(conn, targets)
-	}
-	s.forgetTabManaged(tid)
+	// Target.closeTarget succeeded, so clear every target-scoped resource even if
+	// no later lifecycle event is delivered.
+	s.removeTargetState(tid)
 	return nil
 }
 
@@ -158,7 +178,7 @@ func (s *Server) closeExpiredTabs(ctx context.Context) {
 		}
 		if err := s.ensureBrowserSession(ctx); err != nil {
 			if s.logger != nil {
-				s.logger.Warn("tab idle cleanup skipped", "err", err)
+				s.logger.Warn("tab idle cleanup skipped: browser supervisor not ready", "err", err)
 			}
 			return
 		}

@@ -35,15 +35,32 @@ type Config struct {
 
 	// MaxLogBytes rotates rpc.jsonl once it exceeds this size; <=0 uses DefaultMaxLogBytes.
 	MaxLogBytes int64
+
+	// CDPWatchdogInterval controls how often the long-lived browser websocket is probed.
+	CDPWatchdogInterval time.Duration
+
+	// CDPWatchdogTimeout bounds one lightweight Browser.getVersion probe.
+	CDPWatchdogTimeout time.Duration
+
+	// CDPWatchdogFailures is the number of consecutive failed probes before fatal exit.
+	CDPWatchdogFailures int
+
+	// ObserverIdleTimeout disables observation domains after they have no readers for this long.
+	// Zero keeps an activated observer enabled until its target disappears.
+	ObserverIdleTimeout time.Duration
 }
 
 const (
-	DefaultListenAddr       = "127.0.0.1:8787"
-	DefaultMaxBodyBytes     = 1 << 20 // 1 MiB
-	DefaultTabIdleTimeout   = 5 * time.Minute
-	DefaultIdleStartupGrace = 30 * time.Second
-	DefaultMaxLogBytes      = 8 << 20 // 8 MiB
-	defaultStateDirRel      = ".local/state/bb-daemon"
+	DefaultListenAddr          = "127.0.0.1:8787"
+	DefaultMaxBodyBytes        = 1 << 20 // 1 MiB
+	DefaultTabIdleTimeout      = 5 * time.Minute
+	DefaultIdleStartupGrace    = 30 * time.Second
+	DefaultMaxLogBytes         = 8 << 20 // 8 MiB
+	DefaultCDPWatchdogInterval = 5 * time.Second
+	DefaultCDPWatchdogTimeout  = 2 * time.Second
+	DefaultCDPWatchdogFailures = 3
+	DefaultObserverIdleTimeout = 5 * time.Minute
+	defaultStateDirRel         = ".local/state/bb-daemon"
 )
 
 // Validate checks required fields and normalizes DebuggerURL whitespace.
@@ -81,6 +98,29 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxLogBytes <= 0 {
 		c.MaxLogBytes = DefaultMaxLogBytes
+	}
+	if c.CDPWatchdogInterval == 0 {
+		c.CDPWatchdogInterval = DefaultCDPWatchdogInterval
+	}
+	if c.CDPWatchdogTimeout == 0 {
+		c.CDPWatchdogTimeout = DefaultCDPWatchdogTimeout
+	}
+	if c.CDPWatchdogFailures == 0 {
+		c.CDPWatchdogFailures = DefaultCDPWatchdogFailures
+	}
+	if c.CDPWatchdogInterval < 0 || c.CDPWatchdogTimeout < 0 || c.CDPWatchdogFailures < 0 {
+		return fmt.Errorf("CDP watchdog interval, timeout, and failures must be positive")
+	}
+	if c.CDPWatchdogTimeout > c.CDPWatchdogInterval {
+		return fmt.Errorf("CDP watchdog timeout must not exceed its interval")
+	}
+	if c.ObserverIdleTimeout < 0 {
+		return fmt.Errorf("observer idle timeout must be >= 0")
+	}
+	if c.ObserverIdleTimeout == 0 {
+		// Zero is an intentional public value, but an omitted field in a programmatic
+		// Config is indistinguishable from it. Command-line callers set the default
+		// explicitly; keep zero here so tests and embedders can disable idle cleanup.
 	}
 	if dir := strings.TrimSpace(c.StateDir); dir != "" && dir != stateDirDisabled {
 		c.StateDir = filepath.Clean(dir)

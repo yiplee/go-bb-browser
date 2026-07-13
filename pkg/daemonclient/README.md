@@ -1,6 +1,6 @@
 # daemonclient
 
-`daemonclient` 是 **bb-daemon** 的 Go HTTP 客户端：通过 **JSON-RPC 2.0** 调用 `POST /v1`，并通过 **GET /health** 做存活检查。协议字段与 **`pkg/protocol`**（包名 `protocol`）中的类型、方法名一致，与仓库根目录 `AGENTS.md` 中描述的守护进程行为对齐（短 tab id、全局单调 `seq`、观测类接口的 `cursor` 等）。
+`daemonclient` 是 **bb-daemon** 的 Go HTTP 客户端：通过 **JSON-RPC 2.0** 调用 `POST /v1`，并提供 `Live`、`Ready`、`Health` 三种健康检查。协议字段与 **`pkg/protocol`**（包名 `protocol`）中的类型、方法名一致，与仓库根目录 `AGENTS.md` 中描述的守护进程行为对齐（短 tab id、全局单调 `seq`、观测类接口的 `cursor` 等）。
 
 ## 适用场景
 
@@ -16,7 +16,7 @@ import (
 )
 ```
 
-守护进程根地址示例：`http://127.0.0.1:8080`（不要带尾部路径；客户端会自行拼接 `/health` 与 `/v1`）。
+守护进程根地址示例：`http://127.0.0.1:8080`（不要带尾部路径；客户端会自行拼接 `/live`、`/ready`、`/health` 与 `/v1`）。
 
 ## 构造客户端
 
@@ -45,7 +45,7 @@ c := daemonclient.NewClient("http://127.0.0.1:8080",
 |------|------|
 | `BaseURL` | 守护进程 HTTP 根 URL |
 | `HTTP` | 若非 `nil`，用于所有请求；否则使用 `http.DefaultClient` |
-| `Headers` | 若非空，发往 `Health` / `Call` 时用 `Header.Set` 写入（同一键在 `Headers` 中存多条时，取 slice 中最后一项）；`Call` 随后会 `Set` `Content-Type: application/json`，因此调用方无法覆盖 JSON-RPC 所需的 Content-Type |
+| `Headers` | 若非空，发往 `Live` / `Ready` / `Health` / `Call` 时用 `Header.Set` 写入（同一键在 `Headers` 中存多条时，取 slice 中最后一项）；`Call` 随后会 `Set` `Content-Type: application/json`，因此调用方无法覆盖 JSON-RPC 所需的 Content-Type |
 
 `WithHeader(k, v)` 与 `WithHeaders(h)` 把条目合并进 `Headers`（`h` 为空或 `len(h)==0` 时不做任何事）。
 
@@ -54,15 +54,18 @@ c := daemonclient.NewClient("http://127.0.0.1:8080",
 ## 健康检查
 
 ```go
-if err := c.Health(ctx); err != nil {
+if err := c.Live(ctx); err != nil { // 进程 liveness，不访问 CDP
+    return err
+}
+if err := c.Ready(ctx); err != nil { // 接流量前的 CDP readiness
     // 非 200：*daemonclient.HTTPError
 }
 ```
 
-- 请求：`GET {BaseURL}/health`（若有 `Client.Headers`，用 `Header.Set` 写入）
-- 成功：HTTP **200**，body 形如 `{"status":"ok","browser":"connected"}`（`browser` 还可能为 `skipped`）
-- 失败：HTTP **503** 且 `browser` 为 `disconnected` 时，`Health` / `HealthResult` 返回错误
-- 成功：HTTP 200（响应体内容当前未解析，仅校验状态码）
+- `Live` 请求 `/live`，只接受 `{"status":"ok"}`，适合进程 supervisor。
+- `Ready` / `ReadyResult` 请求 `/ready`；`suspect` 或 `failed` 时为 HTTP 503，适合流量 readiness。
+- `Health` / `HealthResult` 请求兼容的 `/health`；`suspect` 仍为 connected/200，confirmed failed 才为 disconnected/503。
+- `ReadyResult` / `HealthResult` 成功时解析并返回 `protocol.HealthResult`；非 200 返回包含响应体的 `*daemonclient.HTTPError`。
 
 ## 通用调用：`Call`
 

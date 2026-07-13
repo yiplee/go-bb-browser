@@ -55,7 +55,9 @@ sudo loginctl enable-linger "$USER"
 
 - **Environment variables** (alternative to flags — `bb-daemon` reads
   `BB_BROWSER_DEBUGGER_URL`, `BB_BROWSER_LISTEN`, `BB_BROWSER_TAB_IDLE_TIMEOUT`,
-  and `BB_BROWSER_STATE_DIR`):
+  `BB_BROWSER_STATE_DIR`, `BB_BROWSER_CDP_WATCHDOG_INTERVAL`,
+  `BB_BROWSER_CDP_WATCHDOG_TIMEOUT`, `BB_BROWSER_CDP_WATCHDOG_FAILURES`, and
+  `BB_BROWSER_OBSERVER_IDLE_TIMEOUT`):
 
   ```ini
   [Service]
@@ -63,6 +65,10 @@ sudo loginctl enable-linger "$USER"
   Environment=BB_BROWSER_LISTEN=127.0.0.1:8765
   Environment=BB_BROWSER_TAB_IDLE_TIMEOUT=5m
   Environment=BB_BROWSER_STATE_DIR=%h/.local/state/bb-daemon
+  Environment=BB_BROWSER_CDP_WATCHDOG_INTERVAL=5s
+  Environment=BB_BROWSER_CDP_WATCHDOG_TIMEOUT=2s
+  Environment=BB_BROWSER_CDP_WATCHDOG_FAILURES=3
+  Environment=BB_BROWSER_OBSERVER_IDLE_TIMEOUT=5m
   ```
 
   Tab-related RPC log lines live in `rpc.jsonl` under `{StateDir}`, so idle cleanup can be rebuilt after daemon
@@ -70,6 +76,10 @@ sudo loginctl enable-linger "$USER"
   `rpc.jsonl.1`… backups (3 kept). The unit's `ReadWritePaths=` already
   allows `%h/.local/state/bb-daemon`; you may also set `StateDirectory=bb-daemon`
   under `[Service]` for systemd-managed state layout.
+
+`Restart=on-failure` restarts the daemon after the CDP supervisor confirms a broken
+session. External process monitors should query `GET /live` (it never calls CDP);
+reverse proxies and schedulers should use `GET /ready` before sending traffic.
 
 ## Uninstall
 
