@@ -21,6 +21,21 @@ type sequencePinger struct {
 	errs []error
 }
 
+type dirtyMarker struct{ marked atomic.Bool }
+
+func (m *dirtyMarker) MarkTargetDirty() { m.marked.Store(true) }
+
+func TestInitialTargetEnumerationFailureSchedulesRetry(t *testing.T) {
+	srv := newSupervisorTestServer(t, 3)
+	marker := &dirtyMarker{}
+	if snaps := srv.syncInitialTargets(marker, nil, errors.New("temporary target enumeration failure")); snaps != nil {
+		t.Fatalf("snapshots = %#v, want nil", snaps)
+	}
+	if !marker.marked.Load() {
+		t.Fatal("initial target enumeration failure did not schedule resync")
+	}
+}
+
 func (p *sequencePinger) PingBrowserContext(context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()

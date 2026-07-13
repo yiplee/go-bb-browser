@@ -194,9 +194,33 @@ func (s *Server) rpcErr(ctx context.Context, w http.ResponseWriter, id json.RawM
 }
 
 func (s *Server) rpcOK(ctx context.Context, w http.ResponseWriter, id json.RawMessage, result any) {
+	s.touchSuccessfulRPC(ctx, result)
 	s.writeJSONRPCBytes(ctx, w, id, func() ([]byte, error) {
 		return protocol.MarshalResponse(id, result)
 	})
+}
+
+// touchSuccessfulRPC keeps the in-memory idle clock aligned with rpc.jsonl:
+// only successful tab-related RPCs renew a managed tab. tab_new is registered
+// at creation, tab_close removes state, and tab_list is intentionally passive.
+func (s *Server) touchSuccessfulRPC(ctx context.Context, result any) {
+	meta := auditMetaFrom(ctx)
+	if meta == nil || !protocol.IsTabRelatedMethod(meta.action) {
+		return
+	}
+	switch meta.action {
+	case protocol.MethodTabNew, protocol.MethodTabClose, protocol.MethodTabList:
+		return
+	}
+	tab := store.TabFromRequestBody(meta.body)
+	if tab == "" && meta.action == protocol.MethodTabFocus {
+		if focus, ok := result.(protocol.TabFocusResult); ok {
+			tab = focus.Tab
+		}
+	}
+	if tid, ok := s.tabs.Lookup(tab); ok {
+		s.touchTabActivity(tid)
+	}
 }
 
 func (s *Server) nextSeq(ctx context.Context, w http.ResponseWriter, id json.RawMessage) (uint64, bool) {
@@ -398,9 +422,6 @@ func (s *Server) handleTabSelect(ctx context.Context, w http.ResponseWriter, id 
 			Method: protocol.MethodTabSelect,
 		})
 		return
-	}
-	if tid, ok := s.tabs.Lookup(tab); ok {
-		s.touchTabActivity(tid)
 	}
 	seq, ok := s.nextSeq(ctx, w, id)
 	if !ok {
@@ -1199,13 +1220,11 @@ func (s *Server) handleFill(ctx context.Context, w http.ResponseWriter, id json.
 func (s *Server) resolveTab(ctx context.Context, conn tabConn, tab string) (target.ID, bool) {
 	tid, ok := s.tabs.Lookup(tab)
 	if ok {
-		s.touchTabActivity(tid)
 		return tid, true
 	}
 	if targets, err := pageTargets(ctx, conn); err == nil {
 		s.syncTabsFromTargets(targets)
 		if tid, ok := s.tabs.Lookup(tab); ok {
-			s.touchTabActivity(tid)
 			return tid, true
 		}
 	}

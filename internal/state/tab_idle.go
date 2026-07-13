@@ -135,3 +135,16 @@ func (t *TabIdleTracker) Expired(now time.Time, timeout time.Duration) []target.
 	})
 	return out
 }
+
+// IsExpired reports whether id is still managed and expired at now. Callers
+// use this after acquiring the per-tab operation lock to reject stale results
+// returned by Expired when activity raced with cleanup.
+func (t *TabIdleTracker) IsExpired(id target.ID, now time.Time, timeout time.Duration) bool {
+	if t == nil || id == "" || timeout <= 0 {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	last, ok := t.managed[id]
+	return ok && !now.Before(last.Add(timeout))
+}

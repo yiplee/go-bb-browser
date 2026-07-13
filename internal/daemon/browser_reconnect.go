@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chromedp/cdproto/target"
 	"github.com/yiplee/go-bb-browser/internal/browser"
 	"github.com/yiplee/go-bb-browser/internal/state"
 )
@@ -70,21 +71,32 @@ func (s *Server) connectBrowserLocked(ctx context.Context) error {
 	s.watchCDPSession(sess)
 	go s.runTargetSync(ctx, sess)
 	targets, terr := sess.PageTargets()
-	var snaps []state.TabSnapshot
-	if terr != nil {
-		if s.logger != nil {
-			s.logger.Warn("list targets after browser connect", "err", terr)
-		}
-	} else {
-		snaps = s.syncTabsFromTargets(targets)
-	}
-	// Restore managed-tab idle state from the RPC log exactly once, at startup, so
-	// long-idle daemon-created tabs are still cleaned up after a restart.
+	snaps := s.syncInitialTargets(sess, targets, terr)
+	// Perform the initial managed-tab recovery. If target enumeration failed,
+	// runTargetSync repeats this reconciliation after its successful retry.
 	s.reconcileIdleFromLog(snaps)
 	go s.runCDPWatchdog(ctx, sess)
 	if s.logger != nil {
 		s.logger.Info("browser CDP session connected", "debugger", s.cfg.DebuggerURL)
 	}
+	return nil
+}
+
+type targetDirtyMarker interface {
+	MarkTargetDirty()
+}
+
+func (s *Server) syncInitialTargets(marker targetDirtyMarker, targets []*target.Info, err error) []state.TabSnapshot {
+	if err == nil {
+		return s.syncTabsFromTargets(targets)
+	}
+	if s.logger != nil {
+		s.logger.Warn("list targets after browser connect", "err", err)
+	}
+	// The session is connected, so treat an initial enumeration failure as
+	// transient and let runTargetSync retry it. Without this, persisted managed
+	// tabs would never re-enter idle tracking unless another target event arrived.
+	marker.MarkTargetDirty()
 	return nil
 }
 
@@ -116,7 +128,10 @@ func (s *Server) runTargetSync(ctx context.Context, sess *browser.Session) {
 			infos, err := sess.PageTargetsContext(probe)
 			cancel()
 			if err == nil {
-				s.syncTabsFromTargets(infos)
+				snaps := s.syncTabsFromTargets(infos)
+				// Reconciliation is idempotent for tabs already tracked in memory and
+				// is required when the startup target enumeration failed.
+				s.reconcileIdleFromLog(snaps)
 			} else {
 				sess.MarkTargetDirty()
 				s.triggerBrowserProbe()

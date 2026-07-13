@@ -45,6 +45,24 @@ func TestTabIdleTrackerExpired(t *testing.T) {
 	}
 }
 
+func TestTabIdleTrackerIsExpired(t *testing.T) {
+	tracker := NewTabIdleTracker()
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	id := target.ID("managed")
+	tracker.MarkManagedAt(id, now.Add(-time.Minute))
+
+	if !tracker.IsExpired(id, now, time.Minute) {
+		t.Fatal("managed tab should be expired at timeout boundary")
+	}
+	tracker.MarkManagedAt(id, now)
+	if tracker.IsExpired(id, now, time.Minute) {
+		t.Fatal("recently active tab reported expired")
+	}
+	if tracker.IsExpired(target.ID("missing"), now, time.Minute) {
+		t.Fatal("unknown tab reported expired")
+	}
+}
+
 func TestTabIdleTrackerSyncPresent(t *testing.T) {
 	tracker := NewTabIdleTracker()
 	keep := target.ID("keep")

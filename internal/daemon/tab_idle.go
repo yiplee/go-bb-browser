@@ -124,7 +124,11 @@ func (s *Server) closeTabByShort(ctx context.Context, tab string) error {
 		return errTabLockTimeout
 	}
 	defer unlock()
+	return s.closeTabByShortLocked(ctx, conn, tab)
+}
 
+// closeTabByShortLocked closes tab while the caller holds its keyed operation lock.
+func (s *Server) closeTabByShortLocked(ctx context.Context, conn tabConn, tab string) error {
 	tid, ok := s.tabs.Lookup(tab)
 	if !ok {
 		if targets, err := pageTargets(ctx, conn); err == nil {
@@ -187,7 +191,30 @@ func (s *Server) closeExpiredTabs(ctx context.Context) {
 			s.forgetTabManaged(tid)
 			continue
 		}
-		if err := s.closeTabByShort(ctx, short); err != nil {
+		conn := s.tabConn()
+		if conn == nil {
+			if s.logger != nil {
+				s.logger.Warn("tab idle cleanup failed", "tab", short, "err", errTabCloseNoConn)
+			}
+			continue
+		}
+		unlock, locked := s.lockTab(ctx, short)
+		if !locked {
+			if s.logger != nil {
+				s.logger.Warn("tab idle cleanup failed", "tab", short, "err", errTabLockTimeout)
+			}
+			continue
+		}
+		// Expired returned a snapshot. Activity may have completed while cleanup
+		// waited for this lock, so make the close decision again while serialized
+		// with tab operations.
+		if !s.tabIdle.IsExpired(tid, time.Now(), timeout) {
+			unlock()
+			continue
+		}
+		err := s.closeTabByShortLocked(ctx, conn, short)
+		unlock()
+		if err != nil {
 			if errors.Is(err, errTabCloseUnknownID) {
 				s.forgetTabManaged(tid)
 				continue

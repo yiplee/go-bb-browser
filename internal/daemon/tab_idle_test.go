@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -140,6 +141,105 @@ func TestTabIdleTouchRenews(t *testing.T) {
 
 	if len(fc.infos) != 1 {
 		t.Fatalf("touched tab closed: %#v", fc.infos)
+	}
+}
+
+func TestFailedTabRPCDoesNotRenewIdle(t *testing.T) {
+	fc := &fakeConn{infos: []*target.Info{}}
+	srv := newIdleTestServer(fc, time.Minute)
+	rec := postRPC(t, srv, rpcReq(protocol.MethodTabNew, map[string]any{}, 1))
+	var env struct {
+		Result protocol.TabNewResult `json:"result"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	tid, ok := srv.tabs.Lookup(env.Result.Tab)
+	if !ok {
+		t.Fatal("created tab missing from registry")
+	}
+	old := time.Now().Add(-time.Hour)
+	srv.tabIdle.MarkManagedAt(tid, old)
+	fc.navigateErr = errors.New("navigation failed")
+
+	postRPC(t, srv, rpcReq(protocol.MethodGoto, map[string]any{
+		"tab": env.Result.Tab,
+		"url": "https://example.com",
+	}, 2))
+
+	if got := srv.tabIdle.Snapshot()[tid]; !got.Equal(old) {
+		t.Fatalf("failed RPC renewed idle time: got %v want %v", got, old)
+	}
+}
+
+func TestSuccessfulTabRPCRenewsIdle(t *testing.T) {
+	fc := &fakeConn{infos: []*target.Info{}}
+	srv := newIdleTestServer(fc, time.Minute)
+	rec := postRPC(t, srv, rpcReq(protocol.MethodTabNew, map[string]any{}, 1))
+	var env struct {
+		Result protocol.TabNewResult `json:"result"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	tid, ok := srv.tabs.Lookup(env.Result.Tab)
+	if !ok {
+		t.Fatal("created tab missing from registry")
+	}
+	old := time.Now().Add(-time.Hour)
+	srv.tabIdle.MarkManagedAt(tid, old)
+
+	postRPC(t, srv, rpcReq(protocol.MethodGoto, map[string]any{
+		"tab": env.Result.Tab,
+		"url": "https://example.com",
+	}, 2))
+
+	if got := srv.tabIdle.Snapshot()[tid]; !got.After(old) {
+		t.Fatalf("successful RPC did not renew idle time: got %v want after %v", got, old)
+	}
+}
+
+func TestTabIdleRechecksExpiryAfterAcquiringTabLock(t *testing.T) {
+	tid := target.ID("ABCDEF123456")
+	fc := &fakeConn{infos: []*target.Info{
+		{TargetID: tid, Type: "page", Title: "t", URL: "https://ex"},
+	}}
+	srv := newIdleTestServer(fc, time.Minute)
+	short := srv.tabs.RegisterPageTarget(tid)
+	srv.tabIdle.MarkManagedAt(tid, time.Now().Add(-2*time.Minute))
+
+	unlock, ok := srv.lockTab(context.Background(), short)
+	if !ok {
+		t.Fatal("failed to hold tab lock")
+	}
+	done := make(chan struct{})
+	go func() {
+		srv.closeExpiredTabs(context.Background())
+		close(done)
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		srv.tabMuOps.Lock()
+		refs := 0
+		if ent := srv.tabCDPLocks[short]; ent != nil {
+			refs = ent.refs
+		}
+		srv.tabMuOps.Unlock()
+		if refs == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("idle cleanup did not wait for tab lock")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	srv.touchTabActivity(tid)
+	unlock()
+	<-done
+	if len(fc.infos) != 1 {
+		t.Fatalf("tab closed after activity raced with cleanup: %#v", fc.infos)
 	}
 }
 
