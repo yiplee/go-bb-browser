@@ -56,8 +56,9 @@ sudo loginctl enable-linger "$USER"
 - **Environment variables** (alternative to flags — `bb-daemon` reads
   `BB_BROWSER_DEBUGGER_URL`, `BB_BROWSER_LISTEN`, `BB_BROWSER_TAB_IDLE_TIMEOUT`,
   `BB_BROWSER_STATE_DIR`, `BB_BROWSER_CDP_WATCHDOG_INTERVAL`,
-  `BB_BROWSER_CDP_WATCHDOG_TIMEOUT`, `BB_BROWSER_CDP_WATCHDOG_FAILURES`, and
-  `BB_BROWSER_OBSERVER_IDLE_TIMEOUT`):
+  `BB_BROWSER_CDP_WATCHDOG_TIMEOUT`, `BB_BROWSER_CDP_WATCHDOG_FAILURES`,
+  `BB_BROWSER_OBSERVER_IDLE_TIMEOUT`, `BB_BROWSER_LOG_LEVEL`, and
+  `BB_BROWSER_LOG_FORMAT`):
 
   ```ini
   [Service]
@@ -69,6 +70,8 @@ sudo loginctl enable-linger "$USER"
   Environment=BB_BROWSER_CDP_WATCHDOG_TIMEOUT=2s
   Environment=BB_BROWSER_CDP_WATCHDOG_FAILURES=3
   Environment=BB_BROWSER_OBSERVER_IDLE_TIMEOUT=5m
+  Environment=BB_BROWSER_LOG_LEVEL=info
+  Environment=BB_BROWSER_LOG_FORMAT=json
   ```
 
   Tab-related RPC log lines live in `rpc.jsonl` under `{StateDir}`, so idle cleanup can be rebuilt after daemon

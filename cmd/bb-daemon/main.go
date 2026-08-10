@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -38,6 +39,8 @@ func run() int {
 	observerIdleTimeout := flag.String("observer-idle-timeout", envOrDefault("BB_BROWSER_OBSERVER_IDLE_TIMEOUT", "5m"), "disable idle observation domains after this period (0 keeps them enabled until tab close)")
 	stateDir := flag.String("state-dir", envOrDefault("BB_BROWSER_STATE_DIR", ""), "directory for persisted managed-tab state (default: ~/.local/state/bb-daemon)")
 	maxLogBytes := flag.Int64("rpc-log-max-bytes", envOrDefaultInt64("BB_BROWSER_RPC_LOG_MAX_BYTES", daemon.DefaultMaxLogBytes), "rotate rpc.jsonl once it exceeds this many bytes")
+	logLevel := flag.String("log-level", envOrDefault("BB_BROWSER_LOG_LEVEL", "info"), "log level: debug, info, warn, error")
+	logFormat := flag.String("log-format", envOrDefault("BB_BROWSER_LOG_FORMAT", "text"), "log format: text or json")
 	flag.Parse()
 
 	if showVersion {
@@ -47,22 +50,22 @@ func run() int {
 
 	idleTimeout, err := time.ParseDuration(*tabIdleTimeout)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "config: invalid tab-idle-timeout %q: %v\n", *tabIdleTimeout, err)
+		fmt.Fprintf(os.Stderr, "invalid --tab-idle-timeout: %v\n", err)
 		return 2
 	}
 	wdInterval, err := time.ParseDuration(*watchdogInterval)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "config: invalid cdp-watchdog-interval %q: %v\n", *watchdogInterval, err)
+		fmt.Fprintf(os.Stderr, "invalid --cdp-watchdog-interval: %v\n", err)
 		return 2
 	}
 	wdTimeout, err := time.ParseDuration(*watchdogTimeout)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "config: invalid cdp-watchdog-timeout %q: %v\n", *watchdogTimeout, err)
+		fmt.Fprintf(os.Stderr, "invalid --cdp-watchdog-timeout: %v\n", err)
 		return 2
 	}
 	obsIdle, err := time.ParseDuration(*observerIdleTimeout)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "config: invalid observer-idle-timeout %q: %v\n", *observerIdleTimeout, err)
+		fmt.Fprintf(os.Stderr, "invalid --observer-idle-timeout: %v\n", err)
 		return 2
 	}
 
@@ -70,33 +73,68 @@ func run() int {
 		DebuggerURL:         *debuggerURL,
 		ListenAddr:          *listen,
 		TabIdleTimeout:      idleTimeout,
-		StateDir:            *stateDir,
-		MaxLogBytes:         *maxLogBytes,
 		CDPWatchdogInterval: wdInterval,
 		CDPWatchdogTimeout:  wdTimeout,
 		CDPWatchdogFailures: *watchdogFailures,
 		ObserverIdleTimeout: obsIdle,
+		StateDir:            *stateDir,
+		MaxLogBytes:         *maxLogBytes,
 	}
 	if err := cfg.Validate(); err != nil {
 		fmt.Fprintf(os.Stderr, "config: %v\n", err)
 		return 2
 	}
 
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	log, err := newLogger(*logLevel, *logFormat)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "log: %v\n", err)
+		return 2
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	srv, err := daemon.NewServer(cfg, log)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "config: %v\n", err)
-		return 2
+		fmt.Fprintf(os.Stderr, "server: %v\n", err)
+		return 1
 	}
 	if err := srv.ListenAndServe(ctx); err != nil {
 		log.Error("daemon exited", "err", err)
 		return 1
 	}
 	return 0
+}
+
+func newLogger(level, format string) (*slog.Logger, error) {
+	lvl, err := parseLogLevel(level)
+	if err != nil {
+		return nil, err
+	}
+	opts := &slog.HandlerOptions{Level: lvl}
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "", "text":
+		return slog.New(slog.NewTextHandler(os.Stderr, opts)), nil
+	case "json":
+		return slog.New(slog.NewJSONHandler(os.Stderr, opts)), nil
+	default:
+		return nil, fmt.Errorf("invalid --log-format %q (want text or json)", format)
+	}
+}
+
+func parseLogLevel(level string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "", "info":
+		return slog.LevelInfo, nil
+	case "debug":
+		return slog.LevelDebug, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	default:
+		return 0, fmt.Errorf("invalid --log-level %q (want debug, info, warn, or error)", level)
+	}
 }
 
 func envOrDefault(key, fallback string) string {
