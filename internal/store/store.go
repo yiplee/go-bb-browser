@@ -115,7 +115,7 @@ func Open(cfg OpenConfig) (*Store, error) {
 	}
 
 	managed := make(map[string]time.Time)
-	if err := replayLog(f, func(rec LogRecord) error {
+	if err := replayLog(f, logger, func(rec LogRecord) error {
 		applyManagedUpdate(managed, rec)
 		return nil
 	}); err != nil {
@@ -143,12 +143,17 @@ func dirWritable(dir string) bool {
 
 // replayLog reads the full log from the start, invoking fn per record, then
 // leaves the file positioned at the end for subsequent appends.
-func replayLog(f *os.File, fn func(LogRecord) error) error {
+//
+// A corrupt/truncated JSON line stops replay: records already applied are kept,
+// the bad line and anything after it are truncated, and a warning is logged.
+// This matches crash-truncated last lines without failing daemon startup.
+func replayLog(f *os.File, logger *slog.Logger, fn func(LogRecord) error) error {
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
-	defer func() { _, _ = f.Seek(0, io.SeekEnd) }()
 
+	var goodEnd int64
+	var offset int64
 	rd := bufio.NewReader(f)
 	for {
 		line, err := rd.ReadBytes('\n')
@@ -156,18 +161,34 @@ func replayLog(f *os.File, fn func(LogRecord) error) error {
 			trimmed := bytes.TrimSpace(line)
 			if len(trimmed) > 0 {
 				var rec LogRecord
-				if err := json.Unmarshal(trimmed, &rec); err != nil {
-					return fmt.Errorf("parse log line: %w", err)
+				if jerr := json.Unmarshal(trimmed, &rec); jerr != nil {
+					if logger != nil {
+						logger.Warn("rpc log corrupt; abandoning remainder", "err", jerr, "offset", goodEnd)
+					}
+					if terr := f.Truncate(goodEnd); terr != nil {
+						return fmt.Errorf("truncate corrupt rpc log at %d: %w", goodEnd, terr)
+					}
+					if _, seekErr := f.Seek(0, io.SeekEnd); seekErr != nil {
+						return seekErr
+					}
+					return nil
 				}
-				if err := fn(rec); err != nil {
-					return err
+				if fnErr := fn(rec); fnErr != nil {
+					_, _ = f.Seek(0, io.SeekEnd)
+					return fnErr
 				}
 			}
+			offset += int64(len(line))
+			goodEnd = offset
 		}
 		if err == io.EOF {
+			if _, seekErr := f.Seek(0, io.SeekEnd); seekErr != nil {
+				return seekErr
+			}
 			return nil
 		}
 		if err != nil {
+			_, _ = f.Seek(0, io.SeekEnd)
 			return err
 		}
 	}
