@@ -32,7 +32,7 @@ Before implementing handlers, preserve these invariants:
 
 Layout: `cmd/bb-daemon` (daemon); `internal/daemon` (HTTP server, JSON-RPC dispatch); `internal/browser` (remote CDP session); `internal/store` (RPC log + seq); `pkg/protocol` (JSON-RPC + params/result types, importable by dependents); `pkg/daemonclient` (`NewClient` one daemon; `NewPool` many daemons with even spread, per-daemon headers, tab affinity); `internal/state` (tab registry, observation buffers).
 
-**Multi-daemon:** do not put a daemon pool inside callers (e.g. feedscrawler). Use `daemonclient.NewPool(NewClient(urlA, WithHeader(...)), NewClient(urlB, WithHeader(...)))`. Tabs are not shared across daemons: `tab_new` is load-balanced with per-request failover; later ops for a tab id always go to the daemon that created it. `NewPool` does not health-check at startup.
+**Multi-daemon:** do not put a daemon pool inside callers (e.g. feedscrawler). Use `daemonclient.NewPool(NewClient(urlA, WithHeader(...)), NewClient(urlB, WithHeader(...)))`. Tabs are not shared across daemons: Pool maintains `tabID → backend` written on `tab_new` and released on successful `tab_close`; later ops for that tab id always go to the opening daemon (no cross-daemon forward/failover). `NewPool` does not health-check at startup. Unbound `tab_new` may fail over to another daemon only to **open a new tab** there.
 
 ## Cursor Cloud specific instructions
 

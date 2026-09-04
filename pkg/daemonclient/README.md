@@ -80,8 +80,8 @@ _, err = pool.Eval(ctx, protocol.EvalParams{Tab: out.Tab, Script: "document.titl
 | 策略 | 行为 |
 |------|------|
 | **启动** | `NewPool` **不**探测后端。部分 daemon 当时不可用也可以构造成功。 |
-| **无 tab 的请求** | `Health` / `Ready` / `Live`、`tab_new`、`tab_list`、`tab_focus`：选 **in-flight 最少**的后端（并列时 round-robin），失败则试下一个；全部失败返回 `*AllFailedError`。 |
-| **有 tab 的请求** | 始终发往创建该 tab 的 daemon。对端失败 **不会**改道到其它 daemon（tab 不能跨进程）。未知 tab 返回 `*UnknownTabError`，不会静默落到某个后端。池没有跨 daemon 的焦点 tab，省略 `tab` 会得到 `ErrTabRequired`。 |
+| **无 tab 的请求** | `Health` / `Ready` / `Live`、`tab_new`、`tab_list`、`tab_focus`：选 **in-flight 最少**的后端（并列时 round-robin），失败则试下一个；全部失败返回 `*AllFailedError`。`tab_new` 的 failover 只表示「新 tab 开在另一个 daemon」，**不会**把已有 tab 挪走。`tab_list` / `tab_focus` **不**写入 tab 映射。 |
+| **有 tab 的请求** | **硬性**：必须打到 **开出该 tab 的同一个 daemon**。池维护 `tabID → backend`（仅 `TabNew` 成功时写入，`TabClose` 成功后删除）。对端失败 **不会**改道到其它 daemon，也不做跨 daemon 转发。未知 tab 返回 `*UnknownTabError`。池没有跨 daemon 的焦点 tab，省略 `tab` 会得到 `ErrTabRequired`。 |
 
 `Pool.Clients()` 可拿到各 `*Client`（每端独立 URL / `Headers`）。`TabClose` 成功后解除亲和；daemon 空闲关 tab 时可用 `ForgetTab`。
 

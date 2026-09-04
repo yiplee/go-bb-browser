@@ -27,6 +27,8 @@ type fakeDaemon struct {
 	evalTabs []string
 	methods  []string
 	healthN  int
+	listTab  string
+	tabOps   [][2]string // method, tab for tab-scoped RPCs
 }
 
 func newFakeDaemon(t *testing.T, tabPrefix string) (*httptest.Server, *fakeDaemon) {
@@ -87,16 +89,27 @@ func newFakeDaemon(t *testing.T, tabPrefix string) (*httptest.Server, *fakeDaemo
 				tab = st.tabPrefix + strconv.Itoa(st.tabNew)
 			} else {
 				tab = peek.Tab
+				if tab != "" {
+					st.tabOps = append(st.tabOps, [2]string{req.Method, tab})
+				}
 				if req.Method == protocol.MethodEval {
 					st.evalTabs = append(st.evalTabs, tab)
 				}
 			}
+			listTab := st.listTab
 			st.mu.Unlock()
 
 			result := map[string]any{"seq": seq, "tab": tab}
 			if req.Method == protocol.MethodTabList {
-				result["tabs"] = []any{}
-				result["focus"] = tab
+				var tabs []any
+				if listTab != "" {
+					tabs = append(tabs, map[string]string{"tab": listTab, "title": "t", "url": "u"})
+					result["tab"] = listTab
+					result["focus"] = listTab
+				} else {
+					result["focus"] = tab
+				}
+				result["tabs"] = tabs
 			}
 			if req.Method == protocol.MethodEval {
 				result["result"] = json.RawMessage("1")
@@ -427,10 +440,146 @@ func TestPool_tabCloseUnbinds(t *testing.T) {
 	if _, err := p.TabClose(ctx, protocol.TabCloseParams{Tab: out.Tab}); err != nil {
 		t.Fatal(err)
 	}
+	if _, ok := p.ClientForTab(out.Tab); ok {
+		t.Fatal("mapping must be released after TabClose")
+	}
 	_, err = p.Eval(ctx, protocol.EvalParams{Tab: out.Tab, Script: "1"})
 	var ut *UnknownTabError
 	if !errors.As(err, &ut) {
 		t.Fatalf("want unbound after close, got %v", err)
+	}
+}
+
+func TestPool_failedTabCloseKeepsMapping(t *testing.T) {
+	a, sa := newFakeDaemon(t, "a")
+	b, sb := newFakeDaemon(t, "b")
+	p, err := NewPool(NewClient(a.URL), NewClient(b.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	out, err := p.TabNew(ctx, protocol.TabNewParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, ok := p.ClientForTab(out.Tab)
+	if !ok {
+		t.Fatal("missing mapping")
+	}
+	if owner.BaseURL == a.URL {
+		sa.failRPC.Store(true)
+	} else {
+		sb.failRPC.Store(true)
+	}
+	_, err = p.TabClose(ctx, protocol.TabCloseParams{Tab: out.Tab})
+	if err == nil {
+		t.Fatal("expected close failure")
+	}
+	got, ok := p.ClientForTab(out.Tab)
+	if !ok || got.BaseURL != owner.BaseURL {
+		t.Fatal("failed TabClose must not drop tabID → backend mapping")
+	}
+	if owner.BaseURL == a.URL {
+		if sb.methodCount(protocol.MethodTabClose) != 0 {
+			t.Fatal("tab_close must not be forwarded to the other daemon")
+		}
+		sa.failRPC.Store(false)
+	} else {
+		if sa.methodCount(protocol.MethodTabClose) != 0 {
+			t.Fatal("tab_close must not be forwarded to the other daemon")
+		}
+		sb.failRPC.Store(false)
+	}
+	if _, err := p.Eval(ctx, protocol.EvalParams{Tab: out.Tab, Script: "1"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPool_tabListDoesNotRemapOrForward(t *testing.T) {
+	a, sa := newFakeDaemon(t, "a")
+	b, sb := newFakeDaemon(t, "b")
+	p, err := NewPool(NewClient(a.URL), NewClient(b.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	out, err := p.TabNew(ctx, protocol.TabNewParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, ok := p.ClientForTab(out.Tab)
+	if !ok {
+		t.Fatal("missing mapping after TabNew")
+	}
+	sa.mu.Lock()
+	sa.listTab = out.Tab
+	sa.mu.Unlock()
+	sb.mu.Lock()
+	sb.listTab = out.Tab
+	sb.mu.Unlock()
+	for range 4 {
+		if _, err := p.TabList(ctx, protocol.TabListParams{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, ok := p.ClientForTab(out.Tab)
+	if !ok || got.BaseURL != owner.BaseURL {
+		t.Fatal("tab_list must not rewrite tabID → backend")
+	}
+	if _, err := p.Goto(ctx, protocol.GotoParams{Tab: out.Tab, URL: "https://example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Eval(ctx, protocol.EvalParams{Tab: out.Tab, Script: "1"}); err != nil {
+		t.Fatal(err)
+	}
+	other := sb
+	if owner.BaseURL == b.URL {
+		other = sa
+	}
+	if other.hasTabOp(protocol.MethodGoto, out.Tab) || other.hasTabOp(protocol.MethodEval, out.Tab) {
+		t.Fatal("tab-scoped ops must not be forwarded to a daemon that did not open the tab")
+	}
+}
+
+func TestPool_allTabOpsStayOnOwner(t *testing.T) {
+	a, sa := newFakeDaemon(t, "a")
+	b, sb := newFakeDaemon(t, "b")
+	p, err := NewPool(NewClient(a.URL), NewClient(b.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	out, err := p.TabNew(ctx, protocol.TabNewParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tab := out.Tab
+	ops := []error{
+		p.Call(ctx, protocol.MethodGoto, protocol.GotoParams{Tab: tab, URL: "https://example.com"}, new(protocol.GotoResult)),
+		p.Call(ctx, protocol.MethodReload, protocol.ReloadParams{Tab: tab}, new(protocol.ReloadResult)),
+		p.Call(ctx, protocol.MethodScreenshot, protocol.ScreenshotParams{Tab: tab}, new(protocol.ScreenshotResult)),
+		p.Call(ctx, protocol.MethodEval, protocol.EvalParams{Tab: tab, Script: "1"}, new(protocol.EvalResult)),
+		p.Call(ctx, protocol.MethodClick, protocol.ClickParams{Tab: tab, Selector: "a"}, new(protocol.ClickResult)),
+	}
+	for _, err := range ops {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	owner, _ := p.ClientForTab(tab)
+	var ownerSt, otherSt *fakeDaemon
+	if owner.BaseURL == a.URL {
+		ownerSt, otherSt = sa, sb
+	} else {
+		ownerSt, otherSt = sb, sa
+	}
+	for _, m := range []string{protocol.MethodGoto, protocol.MethodReload, protocol.MethodScreenshot, protocol.MethodEval, protocol.MethodClick} {
+		if !ownerSt.hasTabOp(m, tab) {
+			t.Fatalf("owner missing %s", m)
+		}
+		if otherSt.hasTabOp(m, tab) {
+			t.Fatalf("other daemon received forwarded %s", m)
+		}
 	}
 }
 
@@ -516,4 +665,15 @@ func (st *fakeDaemon) hasAnyEval() bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	return len(st.evalTabs) > 0
+}
+
+func (st *fakeDaemon) hasTabOp(method, tab string) bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	for _, op := range st.tabOps {
+		if op[0] == method && op[1] == tab {
+			return true
+		}
+	}
+	return false
 }

@@ -15,6 +15,13 @@ import (
 // each). The existing single-daemon [Client] API is unchanged; Pool exposes the
 // same Health / Call / typed RPC surface and picks a backend per request.
 //
+// Tab affinity (hard invariant): a tab lives on exactly one daemon. [Pool]
+// records tab id → backend on successful tab_new and deletes that entry on
+// successful tab_close. Every later tab-scoped RPC (Eval, Goto, …) is sent
+// only to that backend. The pool never retries or forwards a pinned tab to a
+// different daemon, even if the owner is down. tab_list / tab_focus do not
+// write or rewrite this map.
+//
 // Policy
 //
 //   - Startup: [NewPool] does not probe daemons. Construction succeeds even if
@@ -23,19 +30,18 @@ import (
 //     for methods without a tab id): pick the backend with the fewest in-flight
 //     calls (round-robin among ties). On any error, try the next backend rather
 //     than failing the whole pool. If the caller context is done, the walk
-//     stops. If every backend fails, the error is [*AllFailedError].
-//   - Bound requests (Eval, Goto, TabClose, …): once a tab is created on a
-//     daemon, later calls with that tab id always go to the same daemon. Tabs
-//     are not shared across daemons, so a pinned call is never retried on a
-//     different backend. Unknown tab ids return [*UnknownTabError] (no silent
-//     fallback).
+//     stops. If every backend fails, the error is [*AllFailedError]. Failover
+//     here never moves an existing tab; tab_new creates a new tab on the
+//     backend that succeeds.
+//   - Bound requests: lookup in the tab map only. Unknown tab ids return
+//     [*UnknownTabError] (no silent fallback).
 type Pool struct {
 	clients  []*Client
 	inFlight []atomic.Int64
 	rr       atomic.Uint64
 
 	mu   sync.Mutex
-	tabs map[string]int // short tab id → backend index
+	tabs map[string]int // tab id → backend that opened it; written by tab_new, deleted by tab_close
 }
 
 // NewPool wraps the given daemon clients. Each [Client] has its own BaseURL and
@@ -191,6 +197,7 @@ func (p *Pool) callBound(ctx context.Context, tab, method string, params any, re
 	}
 	hold := p.track(idx)
 	defer hold()
+	// Owner only: never walk other backends (tabs are not forwarded).
 	return p.clients[idx].Call(ctx, method, params, result)
 }
 
@@ -207,34 +214,9 @@ func (p *Pool) callUnbound(ctx context.Context, method string, params any, resul
 			lastErrs = append(lastErrs, err)
 			continue
 		}
-		p.rememberResult(i, method, result)
 		return nil
 	}
 	return &AllFailedError{Op: method, Errs: lastErrs}
-}
-
-func (p *Pool) rememberResult(idx int, method string, result any) {
-	if result == nil {
-		return
-	}
-	switch method {
-	case protocol.MethodTabNew, protocol.MethodTabFocus, protocol.MethodTabSelect:
-		p.bind(tabFromResult(result), idx)
-	case protocol.MethodTabList:
-		b, err := json.Marshal(result)
-		if err != nil {
-			return
-		}
-		var list protocol.TabListResult
-		if err := json.Unmarshal(b, &list); err != nil {
-			return
-		}
-		p.bind(list.Tab, idx)
-		p.bind(list.Focus, idx)
-		for _, item := range list.Tabs {
-			p.bind(item.Tab, idx)
-		}
-	}
 }
 
 func (p *Pool) walkUnbound(ctx context.Context, op string, fn func(context.Context, *Client) error) error {
