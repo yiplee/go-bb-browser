@@ -1,6 +1,6 @@
 # daemonclient
 
-`daemonclient` 是 **bb-daemon** 的 Go HTTP 客户端：通过 **JSON-RPC 2.0** 调用 `POST /v1`，并提供 `Live`、`Ready`、`Health` 三种健康检查。协议字段与 **`pkg/protocol`**（包名 `protocol`）中的类型、方法名一致，与仓库根目录 `AGENTS.md` 中描述的守护进程行为对齐（短 tab id、全局单调 `seq`、观测类接口的 `cursor` 等）。
+`daemonclient` 是 **bb-daemon** 的 Go HTTP 客户端：通过 **JSON-RPC 2.0** 调用 `POST /v1`，并提供 `Live`、`Ready`、`Health` 三种健康检查。一台 daemon 用 `NewClient`；多台用 `NewPool`（见下文）。协议字段与 **`pkg/protocol`**（包名 `protocol`）中的类型、方法名一致，与仓库根目录 `AGENTS.md` 中描述的守护进程行为对齐（短 tab id、全局单调 `seq`、观测类接口的 `cursor` 等）。
 
 ## 适用场景
 
@@ -50,6 +50,42 @@ c := daemonclient.NewClient("http://127.0.0.1:8080",
 `WithHeader(k, v)` 与 `WithHeaders(h)` 把条目合并进 `Headers`（`h` 为空或 `len(h)==0` 时不做任何事）。
 
 每个 `Client` 内部使用单调递增的 JSON-RPC `id`（`uint64` 序列化），与单次调用的业务 `seq` 无关。
+
+## 多 daemon：`Pool`
+
+若干独立的 `bb-daemon`（各自 Chrome / `--debugger-url`）不能共享 tab。`Pool` 在客户端做负载分担，并把 **tab id 钉在创建它的那一个 daemon 上**。
+
+```go
+pool, err := daemonclient.NewPool(
+    daemonclient.NewClient("https://daemon-a.example",
+        daemonclient.WithHeader("CF-Access-Client-Id", idA),
+        daemonclient.WithHeader("CF-Access-Client-Secret", secretA),
+    ),
+    daemonclient.NewClient("https://daemon-b.example",
+        daemonclient.WithHeader("CF-Access-Client-Id", idB),
+        daemonclient.WithHeader("CF-Access-Client-Secret", secretB),
+    ),
+)
+if err != nil {
+    return err
+}
+
+out, err := pool.TabNew(ctx, protocol.TabNewParams{URL: "https://example.com"})
+// Eval / Goto / TabClose / … 必须带 out.Tab，请求会回到同一 daemon
+_, err = pool.Eval(ctx, protocol.EvalParams{Tab: out.Tab, Script: "document.title"})
+```
+
+`NewClient` 的单 daemon API 不变。`Pool` 提供同一套 `Health` / `Call` / 类型化 RPC 方法。
+
+| 策略 | 行为 |
+|------|------|
+| **启动** | `NewPool` **不**探测后端。部分 daemon 当时不可用也可以构造成功。 |
+| **无 tab 的请求** | `Health` / `Ready` / `Live`、`tab_new`、`tab_list`、`tab_focus`：选 **in-flight 最少**的后端（并列时 round-robin），失败则试下一个；全部失败返回 `*AllFailedError`。 |
+| **有 tab 的请求** | 始终发往创建该 tab 的 daemon。对端失败 **不会**改道到其它 daemon（tab 不能跨进程）。未知 tab 返回 `*UnknownTabError`，不会静默落到某个后端。池没有跨 daemon 的焦点 tab，省略 `tab` 会得到 `ErrTabRequired`。 |
+
+`Pool.Clients()` 可拿到各 `*Client`（每端独立 URL / `Headers`）。`TabClose` 成功后解除亲和；daemon 空闲关 tab 时可用 `ForgetTab`。
+
+短 tab id 由各 daemon 独立派生，极端情况下不同 daemon 可能生成相同 id；池按「本池创建的 id → 后端」映射，调用方应只使用本 `Pool` 返回的 tab id。
 
 ## 健康检查
 
@@ -164,7 +200,7 @@ if errors.As(err, &re) {
 
 - **协议真相源**：`pkg/protocol/jsonrpc.go`（方法名、params/result 形状、错误码、`ErrData`）。
 - **守护进程**：`cmd/bb-daemon`；HTTP 与 JSON-RPC 分发在 `internal/daemon` 等包中实现。
-- **测试**：见 `client_test.go`（`httptest` 模拟 `/health` 与 `/v1`）。
+- **测试**：见 `client_test.go`、`pool_test.go`（`httptest` 模拟 `/health` 与 `/v1`）。
 
 ## 简短示例
 

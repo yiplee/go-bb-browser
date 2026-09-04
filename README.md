@@ -322,4 +322,4 @@ IPv6 本机调试地址可使用 `::1:9222`（daemon 会规范化为 `[::1]:9222
 
 ## 相关包
 
-- [`pkg/daemonclient`](pkg/daemonclient/README.md)：Go 语言 JSON-RPC 客户端封装。
+- [`pkg/daemonclient`](pkg/daemonclient/README.md)：Go 语言 JSON-RPC 客户端。`NewClient` 连一台 daemon；`NewPool` 在多台 daemon 间均摊请求（每端独立 URL / 头），并把 tab 钉在创建它的那一台（tab 不能跨 daemon）。

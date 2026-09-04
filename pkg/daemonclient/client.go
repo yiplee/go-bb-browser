@@ -236,127 +236,85 @@ func (c *Client) Call(ctx context.Context, method string, params any, result any
 // --- Typed RPC methods ---
 
 func (c *Client) TabList(ctx context.Context, p protocol.TabListParams) (protocol.TabListResult, error) {
-	var out protocol.TabListResult
-	err := c.Call(ctx, protocol.MethodTabList, p, &out)
-	return out, err
+	return callTyped[protocol.TabListParams, protocol.TabListResult](ctx, c, protocol.MethodTabList, p)
 }
 
 func (c *Client) TabFocus(ctx context.Context, p protocol.TabFocusParams) (protocol.TabFocusResult, error) {
-	var out protocol.TabFocusResult
-	err := c.Call(ctx, protocol.MethodTabFocus, p, &out)
-	return out, err
+	return callTyped[protocol.TabFocusParams, protocol.TabFocusResult](ctx, c, protocol.MethodTabFocus, p)
 }
 
 func (c *Client) TabSelect(ctx context.Context, p protocol.TabSelectParams) (protocol.TabSelectResult, error) {
-	var out protocol.TabSelectResult
-	err := c.Call(ctx, protocol.MethodTabSelect, p, &out)
-	return out, err
+	return callTyped[protocol.TabSelectParams, protocol.TabSelectResult](ctx, c, protocol.MethodTabSelect, p)
 }
 
 func (c *Client) TabNew(ctx context.Context, p protocol.TabNewParams) (protocol.TabNewResult, error) {
-	var out protocol.TabNewResult
-	err := c.Call(ctx, protocol.MethodTabNew, p, &out)
-	return out, err
+	return callTyped[protocol.TabNewParams, protocol.TabNewResult](ctx, c, protocol.MethodTabNew, p)
 }
 
 func (c *Client) Goto(ctx context.Context, p protocol.GotoParams) (protocol.GotoResult, error) {
-	var out protocol.GotoResult
-	err := c.Call(ctx, protocol.MethodGoto, p, &out)
-	return out, err
+	return callTyped[protocol.GotoParams, protocol.GotoResult](ctx, c, protocol.MethodGoto, p)
 }
 
 func (c *Client) Reload(ctx context.Context, p protocol.ReloadParams) (protocol.ReloadResult, error) {
-	var out protocol.ReloadResult
-	err := c.Call(ctx, protocol.MethodReload, p, &out)
-	return out, err
+	return callTyped[protocol.ReloadParams, protocol.ReloadResult](ctx, c, protocol.MethodReload, p)
 }
 
 func (c *Client) TabClose(ctx context.Context, p protocol.TabCloseParams) (protocol.TabCloseResult, error) {
-	var out protocol.TabCloseResult
-	err := c.Call(ctx, protocol.MethodTabClose, p, &out)
-	return out, err
+	return callTyped[protocol.TabCloseParams, protocol.TabCloseResult](ctx, c, protocol.MethodTabClose, p)
 }
 
 func (c *Client) Screenshot(ctx context.Context, p protocol.ScreenshotParams) (protocol.ScreenshotResult, error) {
-	var out protocol.ScreenshotResult
-	err := c.Call(ctx, protocol.MethodScreenshot, p, &out)
-	return out, err
+	return callTyped[protocol.ScreenshotParams, protocol.ScreenshotResult](ctx, c, protocol.MethodScreenshot, p)
 }
 
 func (c *Client) Eval(ctx context.Context, p protocol.EvalParams) (protocol.EvalResult, error) {
-	var out protocol.EvalResult
-	err := c.Call(ctx, protocol.MethodEval, p, &out)
-	return out, err
+	return callTyped[protocol.EvalParams, protocol.EvalResult](ctx, c, protocol.MethodEval, p)
 }
 
 func (c *Client) Click(ctx context.Context, p protocol.ClickParams) (protocol.ClickResult, error) {
-	var out protocol.ClickResult
-	err := c.Call(ctx, protocol.MethodClick, p, &out)
-	return out, err
+	return callTyped[protocol.ClickParams, protocol.ClickResult](ctx, c, protocol.MethodClick, p)
 }
 
 func (c *Client) Fill(ctx context.Context, p protocol.FillParams) (protocol.FillResult, error) {
-	var out protocol.FillResult
-	err := c.Call(ctx, protocol.MethodFill, p, &out)
-	return out, err
+	return callTyped[protocol.FillParams, protocol.FillResult](ctx, c, protocol.MethodFill, p)
 }
 
 func (c *Client) Network(ctx context.Context, p protocol.ObsQueryParams) (protocol.ObsQueryResult, error) {
-	var out protocol.ObsQueryResult
-	err := c.Call(ctx, protocol.MethodNetwork, p, &out)
-	return out, err
+	return callTyped[protocol.ObsQueryParams, protocol.ObsQueryResult](ctx, c, protocol.MethodNetwork, p)
 }
 
 func (c *Client) Console(ctx context.Context, p protocol.ObsQueryParams) (protocol.ObsQueryResult, error) {
-	var out protocol.ObsQueryResult
-	err := c.Call(ctx, protocol.MethodConsole, p, &out)
-	return out, err
+	return callTyped[protocol.ObsQueryParams, protocol.ObsQueryResult](ctx, c, protocol.MethodConsole, p)
 }
 
 func (c *Client) Errors(ctx context.Context, p protocol.ObsQueryParams) (protocol.ObsQueryResult, error) {
-	var out protocol.ObsQueryResult
-	err := c.Call(ctx, protocol.MethodErrors, p, &out)
-	return out, err
+	return callTyped[protocol.ObsQueryParams, protocol.ObsQueryResult](ctx, c, protocol.MethodErrors, p)
 }
 
 func (c *Client) Fetch(ctx context.Context, p protocol.FetchParams) (protocol.FetchResult, error) {
-	var out protocol.FetchResult
-	err := c.Call(ctx, protocol.MethodFetch, p, &out)
-	return out, err
+	return callTyped[protocol.FetchParams, protocol.FetchResult](ctx, c, protocol.MethodFetch, p)
 }
 
 func (c *Client) Snapshot(ctx context.Context, p protocol.SnapshotParams) (protocol.SnapshotResult, error) {
-	var out protocol.SnapshotResult
-	err := c.Call(ctx, protocol.MethodSnapshot, p, &out)
-	return out, err
+	return callTyped[protocol.SnapshotParams, protocol.SnapshotResult](ctx, c, protocol.MethodSnapshot, p)
 }
 
 func (c *Client) NetworkRoute(ctx context.Context, p protocol.NetworkRouteParams) (protocol.NetworkRouteResult, error) {
-	var out protocol.NetworkRouteResult
-	err := c.Call(ctx, protocol.MethodNetworkRoute, p, &out)
-	return out, err
+	return callTyped[protocol.NetworkRouteParams, protocol.NetworkRouteResult](ctx, c, protocol.MethodNetworkRoute, p)
 }
 
 func (c *Client) NetworkUnroute(ctx context.Context, p protocol.NetworkUnrouteParams) (protocol.NetworkUnrouteResult, error) {
-	var out protocol.NetworkUnrouteResult
-	err := c.Call(ctx, protocol.MethodNetworkUnroute, p, &out)
-	return out, err
+	return callTyped[protocol.NetworkUnrouteParams, protocol.NetworkUnrouteResult](ctx, c, protocol.MethodNetworkUnroute, p)
 }
 
 func (c *Client) NetworkClear(ctx context.Context, p protocol.NetworkClearParams) (protocol.NetworkClearResult, error) {
-	var out protocol.NetworkClearResult
-	err := c.Call(ctx, protocol.MethodNetworkClear, p, &out)
-	return out, err
+	return callTyped[protocol.NetworkClearParams, protocol.NetworkClearResult](ctx, c, protocol.MethodNetworkClear, p)
 }
 
 func (c *Client) ConsoleClear(ctx context.Context, p protocol.ConsoleClearParams) (protocol.ConsoleClearResult, error) {
-	var out protocol.ConsoleClearResult
-	err := c.Call(ctx, protocol.MethodConsoleClear, p, &out)
-	return out, err
+	return callTyped[protocol.ConsoleClearParams, protocol.ConsoleClearResult](ctx, c, protocol.MethodConsoleClear, p)
 }
 
 func (c *Client) ErrorsClear(ctx context.Context, p protocol.ErrorsClearParams) (protocol.ErrorsClearResult, error) {
-	var out protocol.ErrorsClearResult
-	err := c.Call(ctx, protocol.MethodErrorsClear, p, &out)
-	return out, err
+	return callTyped[protocol.ErrorsClearParams, protocol.ErrorsClearResult](ctx, c, protocol.MethodErrorsClear, p)
 }
