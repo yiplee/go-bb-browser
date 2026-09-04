@@ -21,7 +21,8 @@ var ErrTabRequired = errors.New("daemonclient: pool method requires a tab id")
 var ErrUnusableTabNewResult = errors.New("daemonclient: tab_new result must be nil or a pointer to a JSON object")
 
 // UnknownTabError is returned when a well-formed Pool tab id is not pinned in
-// this [Pool] (never created via the pool, already closed, or [Pool.ForgetTab]).
+// this [Pool] (never created via TabNew, never observed via TabList/TabFocus,
+// already closed, or [Pool.ForgetTab]).
 type UnknownTabError struct {
 	Tab string
 }
@@ -66,8 +67,9 @@ func (e *TabCollisionError) Error() string {
 }
 
 // AllFailedError is returned when every backend in a [Pool] failed for an
-// unbound operation (health check, tab_new, tab_list, tab_focus, or Call
-// without a pinned tab).
+// operation that walks backends (health check, tab_new, tab_list, tab_focus,
+// or Call without a pinned tab). tab_list / tab_focus skip individual down
+// backends and only return this when none succeed.
 type AllFailedError struct {
 	Op   string
 	Errs []error

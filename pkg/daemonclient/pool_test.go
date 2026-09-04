@@ -117,6 +117,14 @@ func newFakeDaemon(t *testing.T, tabPrefix string) (*httptest.Server, *fakeDaemo
 				}
 				result["tabs"] = tabs
 			}
+			if req.Method == protocol.MethodTabFocus {
+				if listTab != "" {
+					result["tab"] = listTab
+					result["focus"] = listTab
+					result["title"] = "t"
+					result["url"] = "u"
+				}
+			}
 			if req.Method == protocol.MethodEval {
 				result["result"] = json.RawMessage("1")
 			}
@@ -719,6 +727,9 @@ func TestPool_tabListDoesNotRemapOrForward(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if sa.methodCount(protocol.MethodTabList) != 4 || sb.methodCount(protocol.MethodTabList) != 4 {
+		t.Fatalf("tab_list must query every backend, a=%d b=%d", sa.methodCount(protocol.MethodTabList), sb.methodCount(protocol.MethodTabList))
+	}
 	got, ok := p.ClientForTab(out.Tab)
 	if !ok || got.BaseURL != owner.BaseURL {
 		t.Fatal("tab_list must not rewrite tabID → backend")
@@ -735,6 +746,174 @@ func TestPool_tabListDoesNotRemapOrForward(t *testing.T) {
 	}
 	if other.hasTabOp(protocol.MethodGoto, native) || other.hasTabOp(protocol.MethodEval, native) {
 		t.Fatal("tab-scoped ops must not be forwarded to a daemon that did not open the tab")
+	}
+}
+
+func TestPool_tabListMergesPrefixedIds(t *testing.T) {
+	a, sa := newFakeDaemon(t, "a")
+	b, sb := newFakeDaemon(t, "b")
+	sa.listTab = "ta"
+	sb.listTab = "tb"
+	p, err := NewPool(NewClient(a.URL), NewClient(b.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	list, err := p.TabList(ctx, protocol.TabListParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Tabs) != 2 {
+		t.Fatalf("tabs %v", list.Tabs)
+	}
+	got := map[string]bool{}
+	for _, item := range list.Tabs {
+		got[item.Tab] = true
+		assertPoolTabID(t, p, item.Tab)
+	}
+	if !got["0:ta"] || !got["1:tb"] {
+		t.Fatalf("want 0:ta and 1:tb, got %v", list.Tabs)
+	}
+	if list.Focus != "0:ta" || list.Tab != "0:ta" {
+		t.Fatalf("first healthy focus %q tab %q", list.Focus, list.Tab)
+	}
+	if _, ok := p.ClientForTab("0:ta"); !ok {
+		t.Fatal("listed tab must be bound")
+	}
+	if _, err := p.Eval(ctx, protocol.EvalParams{Tab: "0:ta", Script: "1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Eval(ctx, protocol.EvalParams{Tab: "1:tb", Script: "1"}); err != nil {
+		t.Fatal(err)
+	}
+	if !sa.hasEval("ta") || !sb.hasEval("tb") {
+		t.Fatal("eval must strip prefix and hit the owning daemon")
+	}
+	if sa.hasEval("tb") || sb.hasEval("ta") {
+		t.Fatal("listed tabs must not cross daemons")
+	}
+}
+
+func TestPool_tabListSkipsUnhealthy(t *testing.T) {
+	a, sa := newFakeDaemon(t, "a")
+	b, sb := newFakeDaemon(t, "b")
+	sa.failRPC.Store(true)
+	sa.listTab = "ta"
+	sb.listTab = "tb"
+	p, err := NewPool(NewClient(a.URL), NewClient(b.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := p.TabList(context.Background(), protocol.TabListParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Tabs) != 1 || list.Tabs[0].Tab != "1:tb" {
+		t.Fatalf("want only healthy backend, got %v", list.Tabs)
+	}
+	if list.Focus != "1:tb" {
+		t.Fatalf("focus %q", list.Focus)
+	}
+	if _, err := p.Eval(context.Background(), protocol.EvalParams{Tab: "1:tb", Script: "1"}); err != nil {
+		t.Fatal(err)
+	}
+	if sa.hasAnyEval() {
+		t.Fatal("down backend must not receive eval")
+	}
+}
+
+func TestPool_tabListAllFailed(t *testing.T) {
+	a, sa := newFakeDaemon(t, "a")
+	b, sb := newFakeDaemon(t, "b")
+	sa.failRPC.Store(true)
+	sb.failRPC.Store(true)
+	p, err := NewPool(NewClient(a.URL), NewClient(b.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.TabList(context.Background(), protocol.TabListParams{})
+	var af *AllFailedError
+	if !errors.As(err, &af) || af.Op != protocol.MethodTabList {
+		t.Fatalf("want AllFailedError tab_list, got %v", err)
+	}
+	if len(af.Unwrap()) != 2 {
+		t.Fatalf("errs %v", af.Unwrap())
+	}
+}
+
+func TestPool_tabFocusPrefixed(t *testing.T) {
+	a, sa := newFakeDaemon(t, "a")
+	b, sb := newFakeDaemon(t, "b")
+	sa.listTab = "fa"
+	sb.listTab = "fb"
+	p, err := NewPool(NewClient(a.URL), NewClient(b.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	focus, err := p.TabFocus(ctx, protocol.TabFocusParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if focus.Tab != "0:fa" || focus.Focus != "0:fa" {
+		t.Fatalf("want first backend focus, got tab=%q focus=%q", focus.Tab, focus.Focus)
+	}
+	if _, err := p.Eval(ctx, protocol.EvalParams{Tab: focus.Tab, Script: "1"}); err != nil {
+		t.Fatal(err)
+	}
+	if !sa.hasEval("fa") {
+		t.Fatal("focus tab ops must hit backend 0")
+	}
+	if sb.hasEval("fa") || sb.hasEval("fb") {
+		t.Fatal("tab_focus must not be forwarded")
+	}
+	sel, err := p.TabSelect(ctx, protocol.TabSelectParams{Tab: focus.Tab})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sel.Tab != focus.Tab {
+		t.Fatalf("TabSelect result %q", sel.Tab)
+	}
+}
+
+func TestPool_tabFocusSkipsUnhealthy(t *testing.T) {
+	a, sa := newFakeDaemon(t, "a")
+	b, sb := newFakeDaemon(t, "b")
+	sa.failRPC.Store(true)
+	sa.listTab = "fa"
+	sb.listTab = "fb"
+	p, err := NewPool(NewClient(a.URL), NewClient(b.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	focus, err := p.TabFocus(context.Background(), protocol.TabFocusParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if focus.Tab != "1:fb" {
+		t.Fatalf("tab %q", focus.Tab)
+	}
+	if _, err := p.Eval(context.Background(), protocol.EvalParams{Tab: focus.Tab, Script: "1"}); err != nil {
+		t.Fatal(err)
+	}
+	if sa.hasAnyEval() || !sb.hasEval("fb") {
+		t.Fatal("focus must skip the down backend")
+	}
+}
+
+func TestPool_tabFocusAllFailed(t *testing.T) {
+	a, sa := newFakeDaemon(t, "a")
+	b, sb := newFakeDaemon(t, "b")
+	sa.failRPC.Store(true)
+	sb.failRPC.Store(true)
+	p, err := NewPool(NewClient(a.URL), NewClient(b.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.TabFocus(context.Background(), protocol.TabFocusParams{})
+	var af *AllFailedError
+	if !errors.As(err, &af) || af.Op != protocol.MethodTabFocus {
+		t.Fatalf("want AllFailedError tab_focus, got %v", err)
 	}
 }
 

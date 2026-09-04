@@ -18,7 +18,8 @@ func callTyped[P any, R any](ctx context.Context, c caller, method string, p P) 
 }
 
 // methodRequiresTab reports whether a JSON-RPC method is tab-scoped on a [Pool].
-// tab_new / tab_list / tab_focus are daemon-scoped (no affinity key).
+// tab_new is daemon-scoped (no affinity key). tab_list aggregates every
+// backend; tab_focus uses the first healthy backend.
 func methodRequiresTab(method string) bool {
 	switch method {
 	case protocol.MethodTabList, protocol.MethodTabFocus, protocol.MethodTabNew:

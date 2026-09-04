@@ -20,28 +20,36 @@ import (
 // Tab IDs (Pool-only): callers see `<backendKey>:<daemonShortId>`. The default
 // backend key is the 0-based constructor index as a decimal string ("0", "1",
 // …); [NewPoolBackends] can set a stable name instead. Pool strips the prefix
-// before talking to that daemon and prefixes TabNew (and bound-method) results.
-// Cross-daemon native short-id collisions are therefore distinct at this API.
-// Malformed ids and unknown keys are rejected; routing is derived from the
-// prefix. An explicit tab map still records tabs created via this pool (for
-// [Pool.ClientForTab], [Pool.ForgetTab], and close/unbind).
+// before talking to that daemon and prefixes TabNew, TabList, TabFocus, and
+// bound-method results. Cross-daemon native short-id collisions are therefore
+// distinct at this API. Malformed ids and unknown keys are rejected; routing
+// is derived from the prefix. An explicit tab map records tabs created via
+// TabNew or observed via TabList/TabFocus (for [Pool.ClientForTab],
+// [Pool.ForgetTab], and close/unbind).
 //
 // Tab affinity (hard invariant): a tab lives on exactly one daemon. Later
 // tab-scoped RPCs (Eval, Goto, …) go only to the backend named by the prefix.
 // The pool never retries or forwards a pinned tab to a different daemon, even
-// if the owner is down. tab_list / tab_focus do not write or rewrite this map.
+// if the owner is down.
 //
 // Policy
 //
 //   - Startup: [NewPool] does not probe daemons. Construction succeeds even if
 //     some or all backends are currently down (they are skipped later).
-//   - Unbound requests (health checks, tab_new, tab_list, tab_focus, and Call
-//     for methods without a tab id): pick the backend with the fewest in-flight
-//     calls (round-robin among ties). On any error, try the next backend rather
-//     than failing the whole pool. If the caller context is done, the walk
-//     stops. If every backend fails, the error is [*AllFailedError]. Failover
-//     here never moves an existing tab; tab_new creates a new tab on the
-//     backend that succeeds.
+//   - Unbound requests (health checks, tab_new, and Call for methods without a
+//     tab id, other than tab_list / tab_focus): pick the backend with the
+//     fewest in-flight calls (round-robin among ties). On any error, try the
+//     next backend rather than failing the whole pool. If the caller context
+//     is done, the walk stops. If every backend fails, the error is
+//     [*AllFailedError]. Failover here never moves an existing tab; tab_new
+//     creates a new tab on the backend that succeeds.
+//   - tab_list: query every backend in constructor order, prefix each id, and
+//     merge. A down backend is skipped (its tabs are omitted). If every
+//     backend fails, the error is [*AllFailedError]. Listed ids are bound so
+//     later tab ops can use them. There is no pool-wide focus: Tab and Focus
+//     are the first non-empty values in constructor order.
+//   - tab_focus: first successful backend in constructor order (skip down);
+//     return prefixed ids. Not a pool-wide focus.
 //   - Bound requests: parse the prefix, then lookup in the tab map. Unknown
 //     tab ids return [*UnknownTabError]; malformed / unknown-prefix ids return
 //     [*InvalidTabIDError] (no silent fallback).
@@ -151,7 +159,8 @@ func (p *Pool) Clients() []*Client {
 }
 
 // ClientForTab returns the backend pinned to tab, if any. tab must be a
-// Pool-facing id (`<backendKey>:<daemonShortId>`) created via this pool.
+// Pool-facing id (`<backendKey>:<daemonShortId>`) created via TabNew or
+// observed via TabList / TabFocus.
 func (p *Pool) ClientForTab(tab string) (*Client, bool) {
 	idx, ok := p.lookupTab(tab)
 	if !ok {
@@ -220,6 +229,10 @@ func (p *Pool) Call(ctx context.Context, method string, params any, result any) 
 		return p.callCreate(ctx, method, params, result)
 	case protocol.MethodTabClose:
 		return p.callClose(ctx, tab, method, params, result)
+	case protocol.MethodTabList:
+		return p.callTabList(ctx, params, result)
+	case protocol.MethodTabFocus:
+		return p.callTabFocus(ctx, params, result)
 	}
 	if tab != "" {
 		return p.callBound(ctx, tab, method, params, result)
@@ -306,6 +319,65 @@ func (p *Pool) callBound(ctx context.Context, tab, method string, params any, re
 		return fmt.Errorf("daemonclient: decode %s result: %w", method, err)
 	}
 	return nil
+}
+
+func (p *Pool) callTabList(ctx context.Context, params any, result any) error {
+	merged := protocol.TabListResult{Tabs: []protocol.TabListItem{}}
+	var lastErrs []error
+	anyOK := false
+	for i := range p.clients {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var one protocol.TabListResult
+		hold := p.track(i)
+		err := p.clients[i].Call(ctx, protocol.MethodTabList, params, &one)
+		hold()
+		if err != nil {
+			lastErrs = append(lastErrs, err)
+			continue
+		}
+		anyOK = true
+		one = prefixTabListResult(p.keys[i], one)
+		ids := append([]string{one.Tab, one.Focus}, tabIDsFromList(one)...)
+		p.bindObservedTabs(i, ids...)
+		merged.Tabs = append(merged.Tabs, one.Tabs...)
+		if one.Seq > merged.Seq {
+			merged.Seq = one.Seq
+		}
+		if merged.Tab == "" && one.Tab != "" {
+			merged.Tab = one.Tab
+		}
+		if merged.Focus == "" && one.Focus != "" {
+			merged.Focus = one.Focus
+		}
+	}
+	if !anyOK {
+		return &AllFailedError{Op: protocol.MethodTabList, Errs: lastErrs}
+	}
+	return copyResult(result, merged)
+}
+
+func (p *Pool) callTabFocus(ctx context.Context, params any, result any) error {
+	var lastErrs []error
+	for i := range p.clients {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var one protocol.TabFocusResult
+		hold := p.track(i)
+		err := p.clients[i].Call(ctx, protocol.MethodTabFocus, params, &one)
+		hold()
+		if err != nil {
+			lastErrs = append(lastErrs, err)
+			continue
+		}
+		one.Tab = prefixPoolTab(p.keys[i], one.Tab)
+		one.Focus = prefixPoolTab(p.keys[i], one.Focus)
+		p.bindObservedTabs(i, one.Tab, one.Focus)
+		return copyResult(result, one)
+	}
+	return &AllFailedError{Op: protocol.MethodTabFocus, Errs: lastErrs}
 }
 
 func (p *Pool) callUnbound(ctx context.Context, method string, params any, result any) error {
@@ -490,6 +562,62 @@ func replaceJSONTab(params any, short string) (any, error) {
 	}
 	m["tab"] = short
 	return m, nil
+}
+
+func prefixPoolTab(backendKey, daemonShortID string) string {
+	daemonShortID = strings.TrimSpace(daemonShortID)
+	if daemonShortID == "" {
+		return ""
+	}
+	return FormatTabID(backendKey, daemonShortID)
+}
+
+func prefixTabListResult(key string, r protocol.TabListResult) protocol.TabListResult {
+	r.Tab = prefixPoolTab(key, r.Tab)
+	r.Focus = prefixPoolTab(key, r.Focus)
+	if r.Tabs == nil {
+		r.Tabs = []protocol.TabListItem{}
+		return r
+	}
+	out := make([]protocol.TabListItem, len(r.Tabs))
+	for i, item := range r.Tabs {
+		item.Tab = prefixPoolTab(key, item.Tab)
+		out[i] = item
+	}
+	r.Tabs = out
+	return r
+}
+
+func tabIDsFromList(r protocol.TabListResult) []string {
+	ids := make([]string, 0, len(r.Tabs))
+	for _, item := range r.Tabs {
+		ids = append(ids, item.Tab)
+	}
+	return ids
+}
+
+func (p *Pool) bindObservedTabs(idx int, tabs ...string) {
+	for _, tab := range tabs {
+		tab = strings.TrimSpace(tab)
+		if tab == "" {
+			continue
+		}
+		_ = p.bind(tab, idx)
+	}
+}
+
+func copyResult(dst any, src any) error {
+	if dst == nil {
+		return nil
+	}
+	b, err := json.Marshal(src)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(b, dst); err != nil {
+		return fmt.Errorf("daemonclient: decode result: %w", err)
+	}
+	return nil
 }
 
 func setJSONTab(raw json.RawMessage, tab string) json.RawMessage {
