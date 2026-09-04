@@ -16,6 +16,10 @@ var ErrEmptyPool = errors.New("daemonclient: pool requires at least one client")
 // without a tab id. A pool has no shared focus tab across daemons.
 var ErrTabRequired = errors.New("daemonclient: pool method requires a tab id")
 
+// ErrUnusableTabNewResult is returned by [Pool.Call] for tab_new when result
+// is neither nil nor a pointer that can decode a JSON object with a tab id.
+var ErrUnusableTabNewResult = errors.New("daemonclient: tab_new result must be nil or a pointer to a JSON object")
+
 // UnknownTabError is returned when a tab id is not pinned to any backend in
 // this [Pool] (never created via the pool, already closed, or [Pool.ForgetTab]).
 type UnknownTabError struct {
@@ -27,6 +31,20 @@ func (e *UnknownTabError) Error() string {
 		return "daemonclient pool: unknown tab <nil>"
 	}
 	return fmt.Sprintf("daemonclient pool: unknown tab %q (not created via this pool, or already closed)", e.Tab)
+}
+
+// TabCollisionError is returned when tab_new on one daemon yields a short id
+// already pinned to a different backend. Short ids are unique per daemon only;
+// the pool never overwrites the original owner.
+type TabCollisionError struct {
+	Tab string
+}
+
+func (e *TabCollisionError) Error() string {
+	if e == nil {
+		return "daemonclient pool: tab id collision <nil>"
+	}
+	return fmt.Sprintf("daemonclient pool: tab id %q is already owned by another daemon", e.Tab)
 }
 
 // AllFailedError is returned when every backend in a [Pool] failed for an

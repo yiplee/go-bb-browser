@@ -85,7 +85,7 @@ _, err = pool.Eval(ctx, protocol.EvalParams{Tab: out.Tab, Script: "document.titl
 
 `Pool.Clients()` 可拿到各 `*Client`（每端独立 URL / `Headers`）。`TabClose` 成功后解除亲和；daemon 空闲关 tab 时可用 `ForgetTab`。
 
-短 tab id 由各 daemon 独立派生，极端情况下不同 daemon 可能生成相同 id；池按「本池创建的 id → 后端」映射，调用方应只使用本 `Pool` 返回的 tab id。
+短 tab id 由各 daemon 独立派生，不同 daemon 可能返回相同 id。池 **不会** 覆盖已有的 `tabID → backend`：后一次碰撞的 `tab_new` 会在创建端关闭新 tab，并视为该后端失败（可 failover 到其它 daemon）。原先那个 tab 的后续请求仍打到最初的 owner。`Call(ctx, "tab_new", params, nil)` 与非 `protocol.TabNewResult` 的 result 指针只要能解码 JSON 对象，成功时同样写入映射；无法解码的 result 会在发请求前被拒绝。
 
 ## 健康检查
 

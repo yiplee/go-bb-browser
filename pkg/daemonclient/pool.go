@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,7 +21,9 @@ import (
 // successful tab_close. Every later tab-scoped RPC (Eval, Goto, …) is sent
 // only to that backend. The pool never retries or forwards a pinned tab to a
 // different daemon, even if the owner is down. tab_list / tab_focus do not
-// write or rewrite this map.
+// write or rewrite this map. Short ids are unique per daemon only; bind never
+// overwrites an existing owner. A colliding tab_new is closed on the creating
+// daemon and treated as a failed create (failover may try another backend).
 //
 // Policy
 //
@@ -159,20 +162,40 @@ func (p *Pool) Call(ctx context.Context, method string, params any, result any) 
 }
 
 func (p *Pool) callCreate(ctx context.Context, method string, params any, result any) error {
+	if err := checkCreateResult(result); err != nil {
+		return err
+	}
 	var lastErrs []error
 	for _, i := range p.order() {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		// Decode internally so bind does not depend on the caller's result pointer
+		// (nil, map, or a typed struct are all valid Client.Call shapes).
+		var raw json.RawMessage
 		hold := p.track(i)
-		err := p.clients[i].Call(ctx, method, params, result)
+		err := p.clients[i].Call(ctx, method, params, &raw)
 		hold()
 		if err != nil {
 			lastErrs = append(lastErrs, err)
 			continue
 		}
-		if tab := tabFromResult(result); tab != "" {
-			p.bind(tab, i)
+		tab := tabFromRawResult(raw)
+		if tab == "" {
+			lastErrs = append(lastErrs, fmt.Errorf("daemonclient: tab_new returned empty tab id"))
+			continue
+		}
+		if err := p.bind(tab, i); err != nil {
+			p.abandonCreated(ctx, i, tab)
+			lastErrs = append(lastErrs, err)
+			continue
+		}
+		if result != nil {
+			if err := json.Unmarshal(raw, result); err != nil {
+				p.unbind(tab)
+				p.abandonCreated(ctx, i, tab)
+				return fmt.Errorf("daemonclient: decode tab_new result: %w", err)
+			}
 		}
 		return nil
 	}
@@ -262,14 +285,33 @@ func (p *Pool) order() []int {
 	return out
 }
 
-func (p *Pool) bind(tab string, idx int) {
+// bind records tab → idx. It is a no-op overwrite when the same backend already
+// owns tab, and returns [*TabCollisionError] when a different backend does.
+func (p *Pool) bind(tab string, idx int) error {
 	tab = strings.TrimSpace(tab)
 	if tab == "" {
-		return
+		return fmt.Errorf("daemonclient: empty tab id")
 	}
 	p.mu.Lock()
+	defer p.mu.Unlock()
+	if prev, ok := p.tabs[tab]; ok && prev != idx {
+		return &TabCollisionError{Tab: tab}
+	}
 	p.tabs[tab] = idx
-	p.mu.Unlock()
+	return nil
+}
+
+// abandonCreated closes a tab on idx without touching the pool map (the id may
+// already belong to another backend). Best-effort: a cancelled caller context
+// must not skip cleanup.
+func (p *Pool) abandonCreated(ctx context.Context, idx int, tab string) {
+	tab = strings.TrimSpace(tab)
+	if tab == "" || idx < 0 || idx >= len(p.clients) {
+		return
+	}
+	hold := p.track(idx)
+	defer hold()
+	_, _ = p.clients[idx].TabClose(context.WithoutCancel(ctx), protocol.TabCloseParams{Tab: tab})
 }
 
 func (p *Pool) unbind(tab string) {
@@ -297,8 +339,17 @@ func tabIDFromParams(params any) string {
 	return jsonTabField(params)
 }
 
-func tabFromResult(result any) string {
-	return jsonTabField(result)
+func tabFromRawResult(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var peek struct {
+		Tab string `json:"tab"`
+	}
+	if err := json.Unmarshal(raw, &peek); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(peek.Tab)
 }
 
 func jsonTabField(v any) string {
@@ -309,11 +360,22 @@ func jsonTabField(v any) string {
 	if err != nil {
 		return ""
 	}
-	var peek struct {
-		Tab string `json:"tab"`
+	return tabFromRawResult(b)
+}
+
+// checkCreateResult rejects result shapes that cannot hold a tab_new object
+// before any RPC is sent, so a successful create is never left unbound.
+func checkCreateResult(result any) error {
+	if result == nil {
+		return nil
 	}
-	if err := json.Unmarshal(b, &peek); err != nil {
-		return ""
+	rv := reflect.ValueOf(result)
+	if rv.Kind() != reflect.Pointer || rv.IsNil() {
+		return ErrUnusableTabNewResult
 	}
-	return strings.TrimSpace(peek.Tab)
+	probe := reflect.New(rv.Type().Elem()).Interface()
+	if err := json.Unmarshal([]byte(`{"tab":"x","seq":1}`), probe); err != nil {
+		return fmt.Errorf("%w: %v", ErrUnusableTabNewResult, err)
+	}
+	return nil
 }
