@@ -53,7 +53,17 @@ c := daemonclient.NewClient("http://127.0.0.1:8080",
 
 ## 多 daemon：`Pool`
 
-若干独立的 `bb-daemon`（各自 Chrome / `--debugger-url`）不能共享 tab。`Pool` 在客户端做负载分担，并把 **tab id 钉在创建它的那一个 daemon 上**。
+若干独立的 `bb-daemon`（各自 Chrome / `--debugger-url`）不能共享 tab。`Pool` 在客户端做负载分担，并把 **tab 钉在创建它的那一个 daemon 上**。
+
+**Pool 对外 tab id**（仅 Pool 表面；单 `Client` 仍返回 daemon 短 id）格式为：
+
+```text
+<backendKey>:<daemonShortId>
+```
+
+- `backendKey` 默认是 `NewPool` 参数顺序的 **0-based 下标**（`"0"`、`"1"`、…）。也可用 `NewPoolBackends` 配稳定名字（不可含 `:`，不可重复），例如 `"west:abcd"`。
+- 调用方把 `TabNew` 返回的 id 原样传回后续 tab 操作。Pool **按前缀路由**到对应后端，发给 daemon 时只带原生短 id。
+- 因此跨 daemon 的原生短 id 碰撞在 Pool API 边界上不可能混淆。格式错误或未知 `backendKey` 会返回 `*InvalidTabIDError`；格式正确但不是本池创建（或已关闭 / `ForgetTab`）的 id 仍为 `*UnknownTabError`。
 
 ```go
 pool, err := daemonclient.NewPool(
@@ -71,7 +81,7 @@ if err != nil {
 }
 
 out, err := pool.TabNew(ctx, protocol.TabNewParams{URL: "https://example.com"})
-// Eval / Goto / TabClose / … 必须带 out.Tab，请求会回到同一 daemon
+// out.Tab 形如 "0:abcd"；Eval / Goto / TabClose / … 必须带这个 id
 _, err = pool.Eval(ctx, protocol.EvalParams{Tab: out.Tab, Script: "document.title"})
 ```
 
@@ -81,11 +91,11 @@ _, err = pool.Eval(ctx, protocol.EvalParams{Tab: out.Tab, Script: "document.titl
 |------|------|
 | **启动** | `NewPool` **不**探测后端。部分 daemon 当时不可用也可以构造成功。 |
 | **无 tab 的请求** | `Health` / `Ready` / `Live`、`tab_new`、`tab_list`、`tab_focus`：选 **in-flight 最少**的后端（并列时 round-robin），失败则试下一个；全部失败返回 `*AllFailedError`。`tab_new` 的 failover 只表示「新 tab 开在另一个 daemon」，**不会**把已有 tab 挪走。`tab_list` / `tab_focus` **不**写入 tab 映射。 |
-| **有 tab 的请求** | **硬性**：必须打到 **开出该 tab 的同一个 daemon**。池维护 `tabID → backend`（仅 `TabNew` 成功时写入，`TabClose` 成功后删除）。对端失败 **不会**改道到其它 daemon，也不做跨 daemon 转发。未知 tab 返回 `*UnknownTabError`。池没有跨 daemon 的焦点 tab，省略 `tab` 会得到 `ErrTabRequired`。 |
+| **有 tab 的请求** | **硬性**：必须打到 **开出该 tab 的同一个 daemon**。池对外 id 为 `<backendKey>:<daemonShortId>`（`TabNew` 成功时写入映射，`TabClose` 成功后删除）；发给 daemon 时去掉前缀。对端失败 **不会**改道到其它 daemon，也不做跨 daemon 转发。未知（未创建/已关闭）tab 返回 `*UnknownTabError`；格式错误或未知前缀返回 `*InvalidTabIDError`。池没有跨 daemon 的焦点 tab，省略 `tab` 会得到 `ErrTabRequired`。 |
 
-`Pool.Clients()` 可拿到各 `*Client`（每端独立 URL / `Headers`）。`TabClose` 成功后解除亲和；daemon 空闲关 tab 时可用 `ForgetTab`。
+`Pool.Clients()` 可拿到各 `*Client`（每端独立 URL / `Headers`）。`TabClose` 成功后解除亲和；daemon 空闲关 tab 时可用 `ForgetTab`。`BackendKeys()` 返回构造顺序下的前缀。
 
-短 tab id 由各 daemon 独立派生，不同 daemon 可能返回相同 id。池 **不会** 覆盖已有的 `tabID → backend`：后一次碰撞的 `tab_new` 会在创建端关闭新 tab，并视为该后端失败（可 failover 到其它 daemon）。原先那个 tab 的后续请求仍打到最初的 owner。`Call(ctx, "tab_new", params, nil)` 与非 `protocol.TabNewResult` 的 result 指针只要能解码 JSON 对象，成功时同样写入映射；无法解码的 result 会在发请求前被拒绝。
+各 daemon 独立派生短 tab id，不同 daemon 可能返回相同短 id。Pool 用前缀把它们变成互不混淆的对外 id，**不再**靠先到先得的 close-on-collide 作为主策略（`TabCollisionError` 仅作防御）。`Call(ctx, "tab_new", params, nil)` 与非 `protocol.TabNewResult` 的 result 指针只要能解码 JSON 对象，成功时同样写入映射并把 `tab` 改写成前缀形式；无法解码的 result 会在发请求前被拒绝。`tab_list` / `tab_focus` 仍是无绑定的单 daemon 调用，返回该 daemon 的原生短 id，**不会**写入 Pool 映射。
 
 ## 健康检查
 

@@ -18,7 +18,7 @@ import (
 
 type fakeDaemon struct {
 	tabPrefix  string
-	fixedTab   string // if set, every tab_new returns this id (cross-daemon collision tests)
+	fixedTab   string // if set, every tab_new returns this daemon-native id
 	failRPC    atomic.Bool
 	failHealth atomic.Bool
 	require    http.Header
@@ -215,6 +215,8 @@ func TestPool_tabAffinity(t *testing.T) {
 	if first.Tab == second.Tab {
 		t.Fatalf("expected distinct tabs, got %q", first.Tab)
 	}
+	assertPoolTabID(t, p, first.Tab)
+	assertPoolTabID(t, p, second.Tab)
 	c1, ok := p.ClientForTab(first.Tab)
 	if !ok {
 		t.Fatal("missing affinity for first tab")
@@ -234,17 +236,18 @@ func TestPool_tabAffinity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if tabs := sa.evalTabIDs(); len(tabs) > 0 && tabs[0] != first.Tab && tabs[0] != second.Tab {
-		t.Fatalf("unexpected eval on a: %v", tabs)
+	n1, n2 := poolNative(t, first.Tab), poolNative(t, second.Tab)
+	if tabs := sa.evalTabIDs(); len(tabs) > 0 && tabs[0] != n1 && tabs[0] != n2 {
+		t.Fatalf("unexpected eval on a: %v (daemon must see native short ids, not %q/%q)", tabs, first.Tab, second.Tab)
 	}
 	// Each eval must land only on the daemon that created that tab.
-	if sa.hasEval(first.Tab) == sa.hasEval(second.Tab) && sa.hasEval(first.Tab) {
+	if sa.hasEval(n1) == sa.hasEval(n2) && sa.hasEval(n1) {
 		t.Fatalf("both tabs evaluated on daemon a")
 	}
-	aFirst := sa.hasEval(first.Tab)
-	bFirst := sb.hasEval(first.Tab)
-	aSecond := sa.hasEval(second.Tab)
-	bSecond := sb.hasEval(second.Tab)
+	aFirst := sa.hasEval(n1)
+	bFirst := sb.hasEval(n1)
+	aSecond := sa.hasEval(n2)
+	bSecond := sb.hasEval(n2)
 	if aFirst == bFirst || aSecond == bSecond {
 		t.Fatalf("tab not pinned to a single daemon: first a=%v b=%v second a=%v b=%v", aFirst, bFirst, aSecond, bSecond)
 	}
@@ -261,9 +264,9 @@ func TestPool_unknownTabNoFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = p.Eval(context.Background(), protocol.EvalParams{Tab: "nope", Script: "1"})
-	var ut *UnknownTabError
-	if !errors.As(err, &ut) || ut.Tab != "nope" {
-		t.Fatalf("want UnknownTabError, got %v", err)
+	var inv *InvalidTabIDError
+	if !errors.As(err, &inv) || inv.Tab != "nope" {
+		t.Fatalf("want InvalidTabIDError, got %v", err)
 	}
 	if sa.methodCount(protocol.MethodEval) != 0 || sb.methodCount(protocol.MethodEval) != 0 {
 		t.Fatal("unknown tab must not hit any daemon")
@@ -432,7 +435,7 @@ func TestPool_perDaemonHeaders(t *testing.T) {
 	}
 }
 
-func TestPool_crossDaemonShortTabIDCollisionKeepsOwner(t *testing.T) {
+func TestPool_crossDaemonSameShortIDIsUnambiguous(t *testing.T) {
 	a, sa := newFakeDaemon(t, "a")
 	b, sb := newFakeDaemon(t, "b")
 	sa.fixedTab = "dup"
@@ -446,75 +449,58 @@ func TestPool_crossDaemonShortTabIDCollisionKeepsOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Tab != "dup" {
-		t.Fatalf("tab %q", first.Tab)
-	}
-	owner, ok := p.ClientForTab("dup")
-	if !ok {
-		t.Fatal("missing owner after first TabNew")
-	}
-
-	// Take the owner down so failover cannot bind a second "dup" on the same
-	// backend; the other daemon will still return the colliding id.
-	var ownerSt, otherSt *fakeDaemon
-	if owner.BaseURL == a.URL {
-		ownerSt, otherSt = sa, sb
-	} else {
-		ownerSt, otherSt = sb, sa
-	}
-	ownerSt.failRPC.Store(true)
-
-	_, err = p.TabNew(ctx, protocol.TabNewParams{})
-	if err == nil {
-		t.Fatal("colliding TabNew must not succeed while owner is down")
-	}
-	var collision *TabCollisionError
-	var all *AllFailedError
-	if !errors.As(err, &collision) && !errors.As(err, &all) {
-		t.Fatalf("want TabCollisionError or AllFailedError, got %v", err)
-	}
-	if all != nil {
-		found := false
-		for _, e := range all.Unwrap() {
-			if errors.As(e, &collision) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Fatalf("AllFailedError missing TabCollisionError: %v", err)
-		}
-	}
-	if collision.Tab != "dup" {
-		t.Fatalf("collision tab %q", collision.Tab)
-	}
-
-	got, ok := p.ClientForTab("dup")
-	if !ok || got.BaseURL != owner.BaseURL {
-		t.Fatal("collision must not replace the original tabID → backend mapping")
-	}
-	if otherSt.methodCount(protocol.MethodTabClose) != 1 {
-		t.Fatalf("conflicting create must be closed on the creating daemon, tab_close=%d", otherSt.methodCount(protocol.MethodTabClose))
-	}
-	if ownerSt.methodCount(protocol.MethodTabClose) != 0 {
-		t.Fatal("must not close the original owner's tab")
-	}
-
-	ownerSt.failRPC.Store(false)
-	if _, err := p.Eval(ctx, protocol.EvalParams{Tab: "dup", Script: "1"}); err != nil {
+	second, err := p.TabNew(ctx, protocol.TabNewParams{})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if !ownerSt.hasEval("dup") {
-		t.Fatal("eval must hit the original owner")
+	if first.Tab == second.Tab {
+		t.Fatalf("prefixed ids must differ, both %q", first.Tab)
 	}
-	if otherSt.hasEval("dup") {
-		t.Fatal("eval must not be sent to the colliding daemon")
+	k1, s1, ok1 := SplitTabID(first.Tab)
+	k2, s2, ok2 := SplitTabID(second.Tab)
+	if !ok1 || !ok2 || s1 != "dup" || s2 != "dup" {
+		t.Fatalf("want <key>:dup, got %q %q", first.Tab, second.Tab)
+	}
+	if k1 == k2 {
+		t.Fatalf("backend keys must differ, both %q", k1)
+	}
+	c1, ok := p.ClientForTab(first.Tab)
+	if !ok {
+		t.Fatal("missing owner for first")
+	}
+	c2, ok := p.ClientForTab(second.Tab)
+	if !ok {
+		t.Fatal("missing owner for second")
+	}
+	if c1.BaseURL == c2.BaseURL {
+		t.Fatal("same native short id must still pin to distinct backends")
+	}
+
+	if _, err := p.Eval(ctx, protocol.EvalParams{Tab: first.Tab, Script: "1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Eval(ctx, protocol.EvalParams{Tab: second.Tab, Script: "1"}); err != nil {
+		t.Fatal(err)
+	}
+	var firstSt, secondSt *fakeDaemon
+	if c1.BaseURL == a.URL {
+		firstSt, secondSt = sa, sb
+	} else {
+		firstSt, secondSt = sb, sa
+	}
+	if !firstSt.hasEval("dup") || !secondSt.hasEval("dup") {
+		t.Fatal("each daemon must receive eval with the native short id")
+	}
+	if sa.methodCount(protocol.MethodTabClose)+sb.methodCount(protocol.MethodTabClose) != 0 {
+		t.Fatal("prefixed ids must not close-on-collide")
 	}
 }
 
-func TestPool_crossDaemonCollisionDoesNotStealWhenFailoverSucceeds(t *testing.T) {
-	a, sa := newFakeDaemon(t, "x")
-	b, sb := newFakeDaemon(t, "x")
+func TestPool_crossDaemonSameShortIDOwnerDownStillCreates(t *testing.T) {
+	a, sa := newFakeDaemon(t, "a")
+	b, sb := newFakeDaemon(t, "b")
+	sa.fixedTab = "dup"
+	sb.fixedTab = "dup"
 	p, err := NewPool(NewClient(a.URL), NewClient(b.URL))
 	if err != nil {
 		t.Fatal(err)
@@ -526,21 +512,7 @@ func TestPool_crossDaemonCollisionDoesNotStealWhenFailoverSucceeds(t *testing.T)
 	}
 	owner, ok := p.ClientForTab(first.Tab)
 	if !ok {
-		t.Fatal("missing owner")
-	}
-	second, err := p.TabNew(ctx, protocol.TabNewParams{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if second.Tab == first.Tab {
-		t.Fatal("failover after collision must not reuse the first tab id")
-	}
-	got, ok := p.ClientForTab(first.Tab)
-	if !ok || got.BaseURL != owner.BaseURL {
-		t.Fatal("successful colliding TabNew must not replace the original owner")
-	}
-	if _, err := p.Eval(ctx, protocol.EvalParams{Tab: first.Tab, Script: "1"}); err != nil {
-		t.Fatal(err)
+		t.Fatal("missing owner after first TabNew")
 	}
 	var ownerSt, otherSt *fakeDaemon
 	if owner.BaseURL == a.URL {
@@ -548,14 +520,35 @@ func TestPool_crossDaemonCollisionDoesNotStealWhenFailoverSucceeds(t *testing.T)
 	} else {
 		ownerSt, otherSt = sb, sa
 	}
-	if !ownerSt.hasEval(first.Tab) {
-		t.Fatal("first tab ops must stay on the original owner")
+	ownerSt.failRPC.Store(true)
+
+	second, err := p.TabNew(ctx, protocol.TabNewParams{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if otherSt.hasEval(first.Tab) {
-		t.Fatal("first tab must not be forwarded after a colliding create")
+	if second.Tab == first.Tab {
+		t.Fatal("second create must not reuse the first prefixed id")
 	}
-	if otherSt.methodCount(protocol.MethodTabClose) != 1 {
-		t.Fatalf("colliding create must be closed, tab_close=%d", otherSt.methodCount(protocol.MethodTabClose))
+	got, ok := p.ClientForTab(first.Tab)
+	if !ok || got.BaseURL != owner.BaseURL {
+		t.Fatal("second create must not replace the original owner")
+	}
+	if otherSt.methodCount(protocol.MethodTabClose) != 0 || ownerSt.methodCount(protocol.MethodTabClose) != 0 {
+		t.Fatal("must not close either tab when native short ids collide")
+	}
+
+	ownerSt.failRPC.Store(false)
+	if _, err := p.Eval(ctx, protocol.EvalParams{Tab: first.Tab, Script: "1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Eval(ctx, protocol.EvalParams{Tab: second.Tab, Script: "1"}); err != nil {
+		t.Fatal(err)
+	}
+	if !ownerSt.hasEval("dup") {
+		t.Fatal("eval must hit the original owner with the native id")
+	}
+	if !otherSt.hasEval("dup") {
+		t.Fatal("eval must hit the second daemon with the native id")
 	}
 }
 
@@ -595,6 +588,7 @@ func TestPool_CallTabNewUntypedResultStillBinds(t *testing.T) {
 	if strings.TrimSpace(tab) == "" {
 		t.Fatalf("missing tab in untyped result: %v", out)
 	}
+	assertPoolTabID(t, p, tab)
 	owner, ok := p.ClientForTab(tab)
 	if !ok {
 		t.Fatal("untyped tab_new result must still bind")
@@ -713,11 +707,12 @@ func TestPool_tabListDoesNotRemapOrForward(t *testing.T) {
 	if !ok {
 		t.Fatal("missing mapping after TabNew")
 	}
+	native := poolNative(t, out.Tab)
 	sa.mu.Lock()
-	sa.listTab = out.Tab
+	sa.listTab = native
 	sa.mu.Unlock()
 	sb.mu.Lock()
-	sb.listTab = out.Tab
+	sb.listTab = native
 	sb.mu.Unlock()
 	for range 4 {
 		if _, err := p.TabList(ctx, protocol.TabListParams{}); err != nil {
@@ -738,7 +733,7 @@ func TestPool_tabListDoesNotRemapOrForward(t *testing.T) {
 	if owner.BaseURL == b.URL {
 		other = sa
 	}
-	if other.hasTabOp(protocol.MethodGoto, out.Tab) || other.hasTabOp(protocol.MethodEval, out.Tab) {
+	if other.hasTabOp(protocol.MethodGoto, native) || other.hasTabOp(protocol.MethodEval, native) {
 		t.Fatal("tab-scoped ops must not be forwarded to a daemon that did not open the tab")
 	}
 }
@@ -756,8 +751,10 @@ func TestPool_allTabOpsStayOnOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	tab := out.Tab
+	native := poolNative(t, tab)
+	var gotoRes protocol.GotoResult
 	ops := []error{
-		p.Call(ctx, protocol.MethodGoto, protocol.GotoParams{Tab: tab, URL: "https://example.com"}, new(protocol.GotoResult)),
+		p.Call(ctx, protocol.MethodGoto, protocol.GotoParams{Tab: tab, URL: "https://example.com"}, &gotoRes),
 		p.Call(ctx, protocol.MethodReload, protocol.ReloadParams{Tab: tab}, new(protocol.ReloadResult)),
 		p.Call(ctx, protocol.MethodScreenshot, protocol.ScreenshotParams{Tab: tab}, new(protocol.ScreenshotResult)),
 		p.Call(ctx, protocol.MethodEval, protocol.EvalParams{Tab: tab, Script: "1"}, new(protocol.EvalResult)),
@@ -768,6 +765,9 @@ func TestPool_allTabOpsStayOnOwner(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if gotoRes.Tab != tab {
+		t.Fatalf("bound result tab %q want prefixed %q", gotoRes.Tab, tab)
+	}
 	owner, _ := p.ClientForTab(tab)
 	var ownerSt, otherSt *fakeDaemon
 	if owner.BaseURL == a.URL {
@@ -776,10 +776,10 @@ func TestPool_allTabOpsStayOnOwner(t *testing.T) {
 		ownerSt, otherSt = sb, sa
 	}
 	for _, m := range []string{protocol.MethodGoto, protocol.MethodReload, protocol.MethodScreenshot, protocol.MethodEval, protocol.MethodClick} {
-		if !ownerSt.hasTabOp(m, tab) {
-			t.Fatalf("owner missing %s", m)
+		if !ownerSt.hasTabOp(m, native) {
+			t.Fatalf("owner missing %s (daemon must see native %q, not %q)", m, native, tab)
 		}
-		if otherSt.hasTabOp(m, tab) {
+		if otherSt.hasTabOp(m, native) || otherSt.hasTabOp(m, tab) {
 			t.Fatalf("other daemon received forwarded %s", m)
 		}
 	}
@@ -839,6 +839,169 @@ func boundSingleTab(t *testing.T, p *Pool) string {
 	}
 	t.Fatal("no bound tab")
 	return ""
+}
+
+func poolNative(t *testing.T, tab string) string {
+	t.Helper()
+	_, short, ok := SplitTabID(tab)
+	if !ok {
+		t.Fatalf("not a pool tab id: %q", tab)
+	}
+	return short
+}
+
+func assertPoolTabID(t *testing.T, p *Pool, tab string) {
+	t.Helper()
+	key, short, ok := SplitTabID(tab)
+	if !ok {
+		t.Fatalf("TabNew returned unprefixed id %q", tab)
+	}
+	if short == "" {
+		t.Fatalf("empty daemon short id in %q", tab)
+	}
+	found := false
+	for _, k := range p.BackendKeys() {
+		if k == key {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("backend key %q in %q is not in pool keys %v", key, tab, p.BackendKeys())
+	}
+}
+
+func TestPool_defaultBackendKeysAreIndexes(t *testing.T) {
+	a, _ := newFakeDaemon(t, "a")
+	b, _ := newFakeDaemon(t, "b")
+	p, err := NewPool(NewClient(a.URL), NewClient(b.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := p.BackendKeys()
+	if len(got) != 2 || got[0] != "0" || got[1] != "1" {
+		t.Fatalf("keys %v", got)
+	}
+}
+
+func TestPool_namedBackendKeys(t *testing.T) {
+	a, sa := newFakeDaemon(t, "a")
+	b, sb := newFakeDaemon(t, "b")
+	p, err := NewPoolBackends(
+		PoolBackend{Key: "west", Client: NewClient(a.URL)},
+		PoolBackend{Key: "east", Client: NewClient(b.URL)},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	first, err := p.TabNew(ctx, protocol.TabNewParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := p.TabNew(ctx, protocol.TabNewParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	k1, _, ok := SplitTabID(first.Tab)
+	if !ok || (k1 != "west" && k1 != "east") {
+		t.Fatalf("first tab %q", first.Tab)
+	}
+	k2, _, ok := SplitTabID(second.Tab)
+	if !ok || k1 == k2 {
+		t.Fatalf("tabs %q %q", first.Tab, second.Tab)
+	}
+	if _, err := p.Eval(ctx, protocol.EvalParams{Tab: first.Tab, Script: "1"}); err != nil {
+		t.Fatal(err)
+	}
+	native := poolNative(t, first.Tab)
+	if sa.hasEval(native) == sb.hasEval(native) {
+		t.Fatal("named prefix must route to exactly one backend")
+	}
+}
+
+func TestPool_NewPoolBackendsRejectsBadKeys(t *testing.T) {
+	a, _ := newFakeDaemon(t, "a")
+	b, _ := newFakeDaemon(t, "b")
+	_, err := NewPoolBackends(
+		PoolBackend{Key: "a:b", Client: NewClient(a.URL)},
+	)
+	if err == nil {
+		t.Fatal("expected colon in key to fail")
+	}
+	_, err = NewPoolBackends(
+		PoolBackend{Key: "west", Client: NewClient(a.URL)},
+		PoolBackend{Key: "west", Client: NewClient(b.URL)},
+	)
+	if err == nil {
+		t.Fatal("expected duplicate key to fail")
+	}
+}
+
+func TestPool_rejectsMalformedAndUnknownPrefix(t *testing.T) {
+	a, sa := newFakeDaemon(t, "a")
+	b, sb := newFakeDaemon(t, "b")
+	p, err := NewPool(NewClient(a.URL), NewClient(b.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, tab := range []string{"", "nope", ":abc", "0:", "0", "west:abc"} {
+		_, err := p.Eval(ctx, protocol.EvalParams{Tab: tab, Script: "1"})
+		if tab == "" {
+			if !errors.Is(err, ErrTabRequired) {
+				t.Fatalf("%q: want ErrTabRequired, got %v", tab, err)
+			}
+			continue
+		}
+		var inv *InvalidTabIDError
+		if !errors.As(err, &inv) || inv.Tab != tab {
+			t.Fatalf("%q: want InvalidTabIDError, got %v", tab, err)
+		}
+	}
+	_, err = p.Eval(ctx, protocol.EvalParams{Tab: "99:abcd", Script: "1"})
+	var inv *InvalidTabIDError
+	if !errors.As(err, &inv) || inv.Tab != "99:abcd" {
+		t.Fatalf("unknown prefix: %v", err)
+	}
+	if sa.methodCount(protocol.MethodEval) != 0 || sb.methodCount(protocol.MethodEval) != 0 {
+		t.Fatal("invalid tab ids must not hit any daemon")
+	}
+}
+
+func TestPool_unknownPrefixedTab(t *testing.T) {
+	a, sa := newFakeDaemon(t, "a")
+	p, err := NewPool(NewClient(a.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.Eval(context.Background(), protocol.EvalParams{Tab: "0:never", Script: "1"})
+	var ut *UnknownTabError
+	if !errors.As(err, &ut) || ut.Tab != "0:never" {
+		t.Fatalf("want UnknownTabError, got %v", err)
+	}
+	if sa.methodCount(protocol.MethodEval) != 0 {
+		t.Fatal("unknown prefixed tab must not hit the daemon")
+	}
+}
+
+func TestSplitTabID(t *testing.T) {
+	key, short, ok := SplitTabID("west:abc")
+	if !ok || key != "west" || short != "abc" {
+		t.Fatalf("got %q %q %v", key, short, ok)
+	}
+	key, short, ok = SplitTabID("0:ab:cd")
+	if !ok || key != "0" || short != "ab:cd" {
+		t.Fatalf("rest after first colon: %q %q %v", key, short, ok)
+	}
+	for _, tab := range []string{"", "nope", ":x", "x:", "  "} {
+		if _, _, ok := SplitTabID(tab); ok {
+			t.Fatalf("%q should be malformed", tab)
+		}
+	}
+	if FormatTabID("0", "abcd") != "0:abcd" {
+		t.Fatal(FormatTabID("0", "abcd"))
+	}
 }
 
 func (st *fakeDaemon) tabNewCount() int {

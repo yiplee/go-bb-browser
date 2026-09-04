@@ -20,7 +20,7 @@ var ErrTabRequired = errors.New("daemonclient: pool method requires a tab id")
 // is neither nil nor a pointer that can decode a JSON object with a tab id.
 var ErrUnusableTabNewResult = errors.New("daemonclient: tab_new result must be nil or a pointer to a JSON object")
 
-// UnknownTabError is returned when a tab id is not pinned to any backend in
+// UnknownTabError is returned when a well-formed Pool tab id is not pinned in
 // this [Pool] (never created via the pool, already closed, or [Pool.ForgetTab]).
 type UnknownTabError struct {
 	Tab string
@@ -33,9 +33,27 @@ func (e *UnknownTabError) Error() string {
 	return fmt.Sprintf("daemonclient pool: unknown tab %q (not created via this pool, or already closed)", e.Tab)
 }
 
-// TabCollisionError is returned when tab_new on one daemon yields a short id
-// already pinned to a different backend. Short ids are unique per daemon only;
-// the pool never overwrites the original owner.
+// InvalidTabIDError is returned when a Pool tab id is malformed or its
+// backend key is not a member of this pool. Pool ids are
+// `<backendKey>:<daemonShortId>`.
+type InvalidTabIDError struct {
+	Tab    string
+	Reason string
+}
+
+func (e *InvalidTabIDError) Error() string {
+	if e == nil {
+		return "daemonclient pool: invalid tab id <nil>"
+	}
+	if e.Reason != "" {
+		return fmt.Sprintf("daemonclient pool: invalid tab id %q: %s", e.Tab, e.Reason)
+	}
+	return fmt.Sprintf("daemonclient pool: invalid tab id %q (want <backendKey>:<daemonShortId>)", e.Tab)
+}
+
+// TabCollisionError is returned if tab_new would bind an external tab id already
+// owned by a different backend. Prefixed Pool ids make cross-daemon native
+// short-id collisions distinct; this is belt-and-suspenders only.
 type TabCollisionError struct {
 	Tab string
 }

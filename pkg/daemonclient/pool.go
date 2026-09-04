@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,14 +17,19 @@ import (
 // each). The existing single-daemon [Client] API is unchanged; Pool exposes the
 // same Health / Call / typed RPC surface and picks a backend per request.
 //
-// Tab affinity (hard invariant): a tab lives on exactly one daemon. [Pool]
-// records tab id → backend on successful tab_new and deletes that entry on
-// successful tab_close. Every later tab-scoped RPC (Eval, Goto, …) is sent
-// only to that backend. The pool never retries or forwards a pinned tab to a
-// different daemon, even if the owner is down. tab_list / tab_focus do not
-// write or rewrite this map. Short ids are unique per daemon only; bind never
-// overwrites an existing owner. A colliding tab_new is closed on the creating
-// daemon and treated as a failed create (failover may try another backend).
+// Tab IDs (Pool-only): callers see `<backendKey>:<daemonShortId>`. The default
+// backend key is the 0-based constructor index as a decimal string ("0", "1",
+// …); [NewPoolBackends] can set a stable name instead. Pool strips the prefix
+// before talking to that daemon and prefixes TabNew (and bound-method) results.
+// Cross-daemon native short-id collisions are therefore distinct at this API.
+// Malformed ids and unknown keys are rejected; routing is derived from the
+// prefix. An explicit tab map still records tabs created via this pool (for
+// [Pool.ClientForTab], [Pool.ForgetTab], and close/unbind).
+//
+// Tab affinity (hard invariant): a tab lives on exactly one daemon. Later
+// tab-scoped RPCs (Eval, Goto, …) go only to the backend named by the prefix.
+// The pool never retries or forwards a pinned tab to a different daemon, even
+// if the owner is down. tab_list / tab_focus do not write or rewrite this map.
 //
 // Policy
 //
@@ -36,44 +42,106 @@ import (
 //     stops. If every backend fails, the error is [*AllFailedError]. Failover
 //     here never moves an existing tab; tab_new creates a new tab on the
 //     backend that succeeds.
-//   - Bound requests: lookup in the tab map only. Unknown tab ids return
-//     [*UnknownTabError] (no silent fallback).
+//   - Bound requests: parse the prefix, then lookup in the tab map. Unknown
+//     tab ids return [*UnknownTabError]; malformed / unknown-prefix ids return
+//     [*InvalidTabIDError] (no silent fallback).
 type Pool struct {
 	clients  []*Client
+	keys     []string
+	byKey    map[string]int
 	inFlight []atomic.Int64
 	rr       atomic.Uint64
 
 	mu   sync.Mutex
-	tabs map[string]int // tab id → backend that opened it; written by tab_new, deleted by tab_close
+	tabs map[string]int // external tab id → backend that opened it
+}
+
+// PoolBackend is one named member of a [Pool]. Key is the prefix in external
+// tab ids (`<key>:<daemonShortId>`). If Key is empty, [NewPoolBackends] uses
+// the 0-based index as a decimal string. Keys must be unique and must not
+// contain ':'.
+type PoolBackend struct {
+	Key    string
+	Client *Client
 }
 
 // NewPool wraps the given daemon clients. Each [Client] has its own BaseURL and
 // headers (use [WithHeader] / [WithHeaders] for per-daemon credentials such as
-// Cloudflare Access). Order is preserved for [Pool.Clients].
+// Cloudflare Access). Order is preserved for [Pool.Clients]. Backend keys
+// default to "0", "1", … in that order.
 func NewPool(clients ...*Client) (*Pool, error) {
-	if len(clients) == 0 {
+	backends := make([]PoolBackend, len(clients))
+	for i, c := range clients {
+		backends[i] = PoolBackend{Client: c}
+	}
+	return NewPoolBackends(backends...)
+}
+
+// NewPoolBackends is [NewPool] with explicit backend keys for Pool tab ids.
+func NewPoolBackends(backends ...PoolBackend) (*Pool, error) {
+	if len(backends) == 0 {
 		return nil, ErrEmptyPool
 	}
-	out := make([]*Client, len(clients))
-	for i, c := range clients {
-		if c == nil {
+	clients := make([]*Client, len(backends))
+	keys := make([]string, len(backends))
+	byKey := make(map[string]int, len(backends))
+	for i, b := range backends {
+		if b.Client == nil {
 			return nil, fmt.Errorf("daemonclient: pool client %d is nil", i)
 		}
-		if strings.TrimSpace(c.BaseURL) == "" {
+		if strings.TrimSpace(b.Client.BaseURL) == "" {
 			return nil, fmt.Errorf("daemonclient: pool client %d has empty BaseURL", i)
 		}
-		out[i] = c
+		key := strings.TrimSpace(b.Key)
+		if key == "" {
+			key = strconv.Itoa(i)
+		}
+		if strings.Contains(key, ":") {
+			return nil, fmt.Errorf("daemonclient: pool backend key %q must not contain ':'", key)
+		}
+		if _, dup := byKey[key]; dup {
+			return nil, fmt.Errorf("daemonclient: duplicate pool backend key %q", key)
+		}
+		clients[i] = b.Client
+		keys[i] = key
+		byKey[key] = i
 	}
 	return &Pool{
-		clients:  out,
-		inFlight: make([]atomic.Int64, len(out)),
+		clients:  clients,
+		keys:     keys,
+		byKey:    byKey,
+		inFlight: make([]atomic.Int64, len(clients)),
 		tabs:     make(map[string]int),
 	}, nil
+}
+
+// FormatTabID builds a Pool-facing tab id: `<backendKey>:<daemonShortId>`.
+func FormatTabID(backendKey, daemonShortID string) string {
+	return backendKey + ":" + daemonShortID
+}
+
+// SplitTabID parses a Pool-facing tab id. ok is false when tab is not
+// `<backendKey>:<daemonShortId>` with both sides non-empty. The key is the
+// substring before the first ':'; the rest is the daemon-native short id.
+func SplitTabID(tab string) (backendKey, daemonShortID string, ok bool) {
+	tab = strings.TrimSpace(tab)
+	key, short, found := strings.Cut(tab, ":")
+	if !found || key == "" || short == "" {
+		return "", "", false
+	}
+	return key, short, true
 }
 
 // Len returns the number of backends.
 func (p *Pool) Len() int {
 	return len(p.clients)
+}
+
+// BackendKeys returns constructor-order keys used in Pool tab ids.
+func (p *Pool) BackendKeys() []string {
+	out := make([]string, len(p.keys))
+	copy(out, p.keys)
+	return out
 }
 
 // Clients returns the backends in constructor order. The slice and clients are
@@ -82,7 +150,8 @@ func (p *Pool) Clients() []*Client {
 	return p.clients
 }
 
-// ClientForTab returns the backend pinned to tab, if any.
+// ClientForTab returns the backend pinned to tab, if any. tab must be a
+// Pool-facing id (`<backendKey>:<daemonShortId>`) created via this pool.
 func (p *Pool) ClientForTab(tab string) (*Client, bool) {
 	idx, ok := p.lookupTab(tab)
 	if !ok {
@@ -180,20 +249,22 @@ func (p *Pool) callCreate(ctx context.Context, method string, params any, result
 			lastErrs = append(lastErrs, err)
 			continue
 		}
-		tab := tabFromRawResult(raw)
-		if tab == "" {
+		native := tabFromRawResult(raw)
+		if native == "" {
 			lastErrs = append(lastErrs, fmt.Errorf("daemonclient: tab_new returned empty tab id"))
 			continue
 		}
-		if err := p.bind(tab, i); err != nil {
-			p.abandonCreated(ctx, i, tab)
+		ext := FormatTabID(p.keys[i], native)
+		if err := p.bind(ext, i); err != nil {
+			p.abandonCreated(ctx, i, native)
 			lastErrs = append(lastErrs, err)
 			continue
 		}
 		if result != nil {
+			raw = setJSONTab(raw, ext)
 			if err := json.Unmarshal(raw, result); err != nil {
-				p.unbind(tab)
-				p.abandonCreated(ctx, i, tab)
+				p.unbind(ext)
+				p.abandonCreated(ctx, i, native)
 				return fmt.Errorf("daemonclient: decode tab_new result: %w", err)
 			}
 		}
@@ -214,14 +285,27 @@ func (p *Pool) callClose(ctx context.Context, tab, method string, params any, re
 }
 
 func (p *Pool) callBound(ctx context.Context, tab, method string, params any, result any) error {
-	idx, ok := p.lookupTab(tab)
-	if !ok {
-		return &UnknownTabError{Tab: tab}
+	idx, short, err := p.resolveTab(tab)
+	if err != nil {
+		return err
+	}
+	stripped, err := replaceJSONTab(params, short)
+	if err != nil {
+		return err
 	}
 	hold := p.track(idx)
 	defer hold()
-	// Owner only: never walk other backends (tabs are not forwarded).
-	return p.clients[idx].Call(ctx, method, params, result)
+	if result == nil {
+		return p.clients[idx].Call(ctx, method, stripped, nil)
+	}
+	var raw json.RawMessage
+	if err := p.clients[idx].Call(ctx, method, stripped, &raw); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(setJSONTab(raw, tab), result); err != nil {
+		return fmt.Errorf("daemonclient: decode %s result: %w", method, err)
+	}
+	return nil
 }
 
 func (p *Pool) callUnbound(ctx context.Context, method string, params any, result any) error {
@@ -285,8 +369,10 @@ func (p *Pool) order() []int {
 	return out
 }
 
-// bind records tab → idx. It is a no-op overwrite when the same backend already
-// owns tab, and returns [*TabCollisionError] when a different backend does.
+// bind records external tab → idx. It is a no-op overwrite when the same
+// backend already owns tab, and returns [*TabCollisionError] if a different
+// backend does (defensive: prefixed ids make cross-daemon collisions
+// impossible at this layer).
 func (p *Pool) bind(tab string, idx int) error {
 	tab = strings.TrimSpace(tab)
 	if tab == "" {
@@ -303,7 +389,7 @@ func (p *Pool) bind(tab string, idx int) error {
 
 // abandonCreated closes a tab on idx without touching the pool map (the id may
 // already belong to another backend). Best-effort: a cancelled caller context
-// must not skip cleanup.
+// must not skip cleanup. tab is the daemon-native short id.
 func (p *Pool) abandonCreated(ctx context.Context, idx int, tab string) {
 	tab = strings.TrimSpace(tab)
 	if tab == "" || idx < 0 || idx >= len(p.clients) {
@@ -335,6 +421,30 @@ func (p *Pool) lookupTab(tab string) (int, bool) {
 	return idx, ok
 }
 
+// resolveTab parses a Pool-facing tab id, checks the prefix against this pool,
+// and requires the id to be in the created-tab map. The prefix selects the
+// backend (source of truth); the map is "created via this pool".
+func (p *Pool) resolveTab(tab string) (idx int, short string, err error) {
+	tab = strings.TrimSpace(tab)
+	key, short, ok := SplitTabID(tab)
+	if !ok {
+		return 0, "", &InvalidTabIDError{Tab: tab, Reason: "malformed; want <backendKey>:<daemonShortId>"}
+	}
+	idx, ok = p.byKey[key]
+	if !ok {
+		return 0, "", &InvalidTabIDError{Tab: tab, Reason: fmt.Sprintf("unknown backend key %q", key)}
+	}
+	mapped, inMap := p.lookupTab(tab)
+	if !inMap {
+		return 0, "", &UnknownTabError{Tab: tab}
+	}
+	if mapped != idx {
+		// Prefix wins if the map ever disagrees (should not happen).
+		return idx, short, nil
+	}
+	return idx, short, nil
+}
+
 func tabIDFromParams(params any) string {
 	return jsonTabField(params)
 }
@@ -361,6 +471,41 @@ func jsonTabField(v any) string {
 		return ""
 	}
 	return tabFromRawResult(b)
+}
+
+func replaceJSONTab(params any, short string) (any, error) {
+	if params == nil {
+		return map[string]any{"tab": short}, nil
+	}
+	b, err := json.Marshal(params)
+	if err != nil {
+		return nil, fmt.Errorf("marshal params: %w", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, fmt.Errorf("decode params: %w", err)
+	}
+	if m == nil {
+		m = map[string]any{}
+	}
+	m["tab"] = short
+	return m, nil
+}
+
+func setJSONTab(raw json.RawMessage, tab string) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil || m == nil {
+		return raw
+	}
+	m["tab"] = tab
+	out, err := json.Marshal(m)
+	if err != nil {
+		return raw
+	}
+	return out
 }
 
 // checkCreateResult rejects result shapes that cannot hold a tab_new object
