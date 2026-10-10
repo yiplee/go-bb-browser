@@ -75,6 +75,8 @@ flowchart LR
 |------|------|
 | `BB_BROWSER_DEBUGGER_URL` | Chrome DevTools 端点（`host:port` 或 ws/http URL），等价 `--debugger-url` |
 | `BB_BROWSER_LISTEN` | daemon 监听地址，默认 `127.0.0.1:8787` |
+| `BB_BROWSER_API_TOKEN` | daemon API token 白名单，英文逗号分隔，与可重复的 `--api-token` 合并；CLI 使用同名变量或 `--api-token` 发送单个 token（标志覆盖环境变量） |
+| `BB_BROWSER_API_TOKEN_FILE` | daemon token 文件路径，等价 `--api-token-file`；一行一个 token，忽略空行和 `#` 注释行 |
 | `BB_BROWSER_TAB_IDLE_TIMEOUT` | 自动关闭 daemon 创建的 idle tab 的超时，默认 `5m`；`0` 禁用 |
 | `BB_BROWSER_CDP_WATCHDOG_INTERVAL` | `Browser.getVersion` 探测间隔，默认 `5s` |
 | `BB_BROWSER_CDP_WATCHDOG_TIMEOUT` | 单次探测超时，默认 `2s` |
@@ -84,6 +86,16 @@ flowchart LR
 | `BB_BROWSER_RPC_LOG_MAX_BYTES` | `rpc.jsonl` 超过该字节数即轮转，默认 `8388608`（8 MiB）；等价 `--rpc-log-max-bytes` |
 | `BB_BROWSER_LOG_LEVEL` | slog 级别：`debug` / `info` / `warn` / `error`，默认 `info`；等价 `--log-level` |
 | `BB_BROWSER_LOG_FORMAT` | slog 输出格式：`text` 或 `json`，默认 `text`；等价 `--log-format` |
+
+**可选 API token**：daemon 将重复的 `--api-token`、`BB_BROWSER_API_TOKEN`（英文逗号分隔）和 `--api-token-file` / `BB_BROWSER_API_TOKEN_FILE` 的内容合并，去首尾空白、去重、忽略空项；文件忽略空行和以 `#` 开头的注释行。文件路径的标志覆盖环境变量；文件读取失败会拒绝启动。合并后为空时保持原有行为；未启用且监听非回环地址时只打一条 warn，不拒绝启动。修改白名单需重启 daemon。
+
+启用后，`POST /v1` 必须携带 `Authorization: Bearer <token>`（客户端每次只传白名单中的一个 token），否则返回标准 **HTTP 401**，`Content-Type: text/plain; charset=utf-8`，正文固定为 `unauthorized\n`，并带 `WWW-Authenticate: Bearer`。鉴权在读取请求体、RPC 分发和 audit 前完成，失败请求不会操作浏览器或写 `rpc.jsonl`。`/live`、`/ready`、`/health` 始终免 token。API token 不写入启动日志、错误信息或 RPC audit；用 token 文件可避免 token 出现在 daemon 进程参数中。
+
+```bash
+# 文件一行一个 token；此处和部署示例只使用占位符
+bb-daemon --debugger-url 127.0.0.1:9222 --api-token-file /path/to/api-tokens
+BB_BROWSER_API_TOKEN='<caller-token>' bb-browser tab list
+```
 
 **Idle tab 自动清理**：`tab_new` 创建的 tab 会被 daemon 跟踪；在 `BB_BROWSER_TAB_IDLE_TIMEOUT` 内无操作则自动 `tab_close`。tab 相关 JSON-RPC 的 **`method` + 原始 request body** 写入 `rpc.jsonl`；idle 状态维护在内存。**daemon 重启**时先通过 CDP 获取当前存在的 tab，再回放 `rpc.jsonl` 求出这些 tab 的最后活跃时间来恢复 idle 跟踪（短 tab id 由 CDP target id 确定性派生，跨重启稳定）。重启后有约 30s grace。全局 `seq` 以启动时的纳秒时钟为起始值内存自增，无需持久化即可跨重启保持递增。`rpc.jsonl` 超过约 8 MiB 会自动轮转：旧文件保存为 `rpc.jsonl.1`…（保留 3 份），新文件开头会写入当前存活 managed tab 的快照（合成 `tab_new` + 最后活跃时间），因此恢复只需读当前文件即可保持完整。
 
@@ -96,6 +108,7 @@ services:
     environment:
       BB_BROWSER_DEBUGGER_URL: "http://chrome:9222"
       BB_BROWSER_LISTEN: "0.0.0.0:8787"
+      BB_BROWSER_API_TOKEN: "<caller-a-token>,<caller-b-token>"
       BB_BROWSER_STATE_DIR: "/var/lib/bb-daemon"
       BB_BROWSER_TAB_IDLE_TIMEOUT: "5m"
       BB_BROWSER_OBSERVER_IDLE_TIMEOUT: "5m"
@@ -147,6 +160,7 @@ Daemon 已实现但 **CLI 未封装** 的 JSON-RPC 方法：`tab_focus`（返回
 | 选项 | 环境变量 | 说明 |
 |------|----------|------|
 | `--url` | `BB_BROWSER_URL` | `bb-daemon` 根 URL，默认 `http://127.0.0.1:8787`（无尾部 `/`） |
+| `--api-token` | `BB_BROWSER_API_TOKEN` | 一个 daemon API token，自动为 `POST /v1` 添加 `Authorization: Bearer <token>`；标志覆盖环境变量 |
 | `--json` | — | 打印原始 JSON-RPC（部分子命令为完整 envelope） |
 | `--tab` | — | 短 tab id；省略则用 `tab_list` 返回的 daemon 焦点 tab |
 | `-v` / `--version` | — | 打印版本并退出 |

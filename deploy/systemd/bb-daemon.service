@@ -1,6 +1,9 @@
 [Service]
 Type=simple
 ExecStart=%h/.local/bin/bb-daemon --debugger-url http://127.0.0.1:9222
+# Optional API token whitelist; replace placeholders before enabling.
+# Environment="BB_BROWSER_API_TOKEN=<caller-a-token>,<caller-b-token>"
+# Or use Environment=BB_BROWSER_API_TOKEN_FILE=/path/to/api-tokens
 Restart=on-failure
 RestartSec=2s
 KillSignal=SIGTERM

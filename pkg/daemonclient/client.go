@@ -28,6 +28,12 @@ type Client struct {
 // ClientOption configures a [Client] when passed to [NewClient].
 type ClientOption func(*Client)
 
+// WithAPIToken adds one API token, equivalent to WithHeader("Authorization", "Bearer "+token).
+// Each client in a Pool can use its own token.
+func WithAPIToken(token string) ClientOption {
+	return WithHeader("Authorization", "Bearer "+token)
+}
+
 // WithHeader returns a [ClientOption] that merges a single header via [http.Header.Add].
 func WithHeader(k, v string) ClientOption {
 	return func(c *Client) {
