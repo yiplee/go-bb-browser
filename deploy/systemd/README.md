@@ -54,7 +54,8 @@ sudo loginctl enable-linger "$USER"
   ```
 
 - **Environment variables** (alternative to flags — `bb-daemon` reads
-  `BB_BROWSER_DEBUGGER_URL`, `BB_BROWSER_LISTEN`, `BB_BROWSER_TAB_IDLE_TIMEOUT`,
+  `BB_BROWSER_DEBUGGER_URL`, `BB_BROWSER_LISTEN`, `BB_BROWSER_API_TOKEN`,
+  `BB_BROWSER_API_TOKEN_FILE`, `BB_BROWSER_TAB_IDLE_TIMEOUT`,
   `BB_BROWSER_STATE_DIR`, `BB_BROWSER_CDP_WATCHDOG_INTERVAL`,
   `BB_BROWSER_CDP_WATCHDOG_TIMEOUT`, `BB_BROWSER_CDP_WATCHDOG_FAILURES`,
   `BB_BROWSER_OBSERVER_IDLE_TIMEOUT`, `BB_BROWSER_LOG_LEVEL`, and
@@ -64,6 +65,7 @@ sudo loginctl enable-linger "$USER"
   [Service]
   Environment=BB_BROWSER_DEBUGGER_URL=http://127.0.0.1:9222
   Environment=BB_BROWSER_LISTEN=127.0.0.1:8765
+  Environment="BB_BROWSER_API_TOKEN=<caller-a-token>,<caller-b-token>"
   Environment=BB_BROWSER_TAB_IDLE_TIMEOUT=5m
   Environment=BB_BROWSER_STATE_DIR=%h/.local/state/bb-daemon
   Environment=BB_BROWSER_CDP_WATCHDOG_INTERVAL=5s
@@ -73,6 +75,12 @@ sudo loginctl enable-linger "$USER"
   Environment=BB_BROWSER_LOG_LEVEL=info
   Environment=BB_BROWSER_LOG_FORMAT=json
   ```
+
+  Replace token placeholders before use. Alternatively set `Environment=BB_BROWSER_API_TOKEN_FILE=/path/to/api-tokens`
+  to read one token per line (blank and `#` comment lines ignored). Token sources merge after trimming and deduplication;
+  an empty whitelist disables auth. Changes require restart. `POST /v1` requires a matching Bearer token when enabled;
+  failures return standard HTTP 401 with plain text `unauthorized\n` and never dispatch or write the RPC log.
+  `/live`, `/ready`, `/health` stay public for probes. Without tokens, non-loopback listening only warns.
 
   Tab-related RPC log lines live in `rpc.jsonl` under `{StateDir}`, so idle cleanup can be rebuilt after daemon
   restarts by intersecting live CDP tabs with the log's per-tab activity. The log auto-rotates past ~8 MiB into

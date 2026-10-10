@@ -28,6 +28,12 @@ func (s *Server) handleV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !s.authorized(r) {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	rawBody, err := io.ReadAll(r.Body)
 	if err != nil {
 		s.writeJSONRPCBytes(ctx, w, protocol.NullID, func() ([]byte, error) {

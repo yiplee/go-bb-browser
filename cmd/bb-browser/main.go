@@ -23,9 +23,10 @@ import (
 )
 
 var (
-	baseURL string
-	jsonOut bool
-	tabFlag string
+	baseURL  string
+	jsonOut  bool
+	tabFlag  string
+	apiToken string
 
 	version = "dev"
 	commit  = "none"
@@ -56,6 +57,9 @@ Requires Chrome with remote debugging and a running bb-daemon (see README).`),
 	}
 
 	root.PersistentFlags().StringVar(&baseURL, "url", envOrDefault("BB_BROWSER_URL", "http://127.0.0.1:8787"), "bb-daemon base URL (no trailing slash)")
+	root.PersistentFlags().StringVar(&apiToken, "api-token", "", "API token for bb-daemon (or BB_BROWSER_API_TOKEN; one token)")
+	// Keep the secret out of Cobra's help defaults.
+	apiToken = os.Getenv("BB_BROWSER_API_TOKEN")
 	root.PersistentFlags().BoolVar(&jsonOut, "json", false, "print raw JSON-RPC result (or full envelope for some commands)")
 	root.PersistentFlags().StringVar(&tabFlag, "tab", "", "short tab id; when omitted, uses daemon focused tab from tab_list")
 
@@ -1149,6 +1153,9 @@ func postRPC(ctx context.Context, base string, method string, params map[string]
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if token := strings.TrimSpace(apiToken); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err

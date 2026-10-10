@@ -21,6 +21,9 @@ type Config struct {
 	// ListenAddr is the TCP address for the HTTP API (default from flags).
 	ListenAddr string
 
+	// APITokens is the optional whitelist for POST /v1; empty disables authentication.
+	APITokens []string
+
 	// MaxBodyBytes caps incoming HTTP request bodies (POST /v1 and similar).
 	MaxBodyBytes int64
 
@@ -68,6 +71,7 @@ func (c *Config) Validate() error {
 	if c == nil {
 		return fmt.Errorf("daemon config is nil")
 	}
+	c.APITokens = normalizeAPITokens(c.APITokens)
 	raw := strings.TrimSpace(c.DebuggerURL)
 	if raw == "" {
 		return fmt.Errorf("debugger URL is required (set --debugger-url or BB_BROWSER_DEBUGGER_URL)")

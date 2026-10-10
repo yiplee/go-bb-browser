@@ -24,6 +24,12 @@ import (
 c := daemonclient.NewClient("http://127.0.0.1:8080")
 ```
 
+daemon 配置 API token 白名单后，每个客户端用 `daemonclient.WithAPIToken(token)` 发送其中一个 token，等价于 `WithHeader("Authorization", "Bearer "+token)`。本包不自动读取环境变量；调用方提供 token。鉴权失败返回标准 HTTP 401（正文 `unauthorized\n`，非 JSON-RPC），可用 `errors.As` 检查 `*HTTPError` 的 `StatusCode`。失败请求不会执行 RPC 或写 `rpc.jsonl`；未配置白名单时行为不变，`/live`、`/ready`、`/health` 免 token（客户端仍会发送已配置的 headers）。
+
+```go
+c := daemonclient.NewClient("http://127.0.0.1:8080", daemonclient.WithAPIToken("<caller-token>"))
+```
+
 `NewClient` 会去掉首尾空白，并去掉 `BaseURL` 末尾的 `/`。第二个及之后的参数为可选的 `ClientOption`，例如为所有请求附加 HTTP 头（鉴权、自定义网关等）：
 
 ```go
@@ -68,10 +74,12 @@ c := daemonclient.NewClient("http://127.0.0.1:8080",
 ```go
 pool, err := daemonclient.NewPool(
     daemonclient.NewClient("https://daemon-a.example",
+        daemonclient.WithAPIToken("<daemon-a-token>"),
         daemonclient.WithHeader("CF-Access-Client-Id", idA),
         daemonclient.WithHeader("CF-Access-Client-Secret", secretA),
     ),
     daemonclient.NewClient("https://daemon-b.example",
+        daemonclient.WithAPIToken("<daemon-b-token>"),
         daemonclient.WithHeader("CF-Access-Client-Id", idB),
         daemonclient.WithHeader("CF-Access-Client-Secret", secretB),
     ),
@@ -96,6 +104,8 @@ _, err = pool.Eval(ctx, protocol.EvalParams{Tab: out.Tab, Script: "document.titl
 | **有 tab 的请求** | **硬性**：必须打到 **该前缀对应的同一个 daemon**（含 `tab_select`）。池对外 id 为 `<backendKey>:<daemonShortId>`（`TabNew` / `TabList` / `TabFocus` 成功时写入映射，`TabClose` 成功后删除）；发给 daemon 时去掉前缀。对端失败 **不会**改道到其它 daemon，也不做跨 daemon 转发。未知（未创建/未列出/已关闭）tab 返回 `*UnknownTabError`；格式错误或未知前缀返回 `*InvalidTabIDError`。省略 `tab` 会得到 `ErrTabRequired`。 |
 
 `Pool.Clients()` 可拿到各 `*Client`（每端独立 URL / `Headers`）。`TabClose` 成功后解除亲和；daemon 空闲关 tab 时可用 `ForgetTab`。`BackendKeys()` 返回构造顺序下的前缀。
+
+每个 backend 的 `WithAPIToken` 独立生效，Pool 不共享 token；后续 tab 操作仍发送到原 backend。
 
 各 daemon 独立派生短 tab id，不同 daemon 可能返回相同短 id。Pool 用前缀把它们变成互不混淆的对外 id，**不再**靠先到先得的 close-on-collide 作为主策略（`TabCollisionError` 仅作防御）。`Call(ctx, "tab_new", params, nil)` 与非 `protocol.TabNewResult` 的 result 指针只要能解码 JSON 对象，成功时同样写入映射并把 `tab` 改写成前缀形式；无法解码的 result 会在发请求前被拒绝。`tab_list` 合并所有后端并前缀化；`tab_focus` 返回第一个健康后端的前缀化焦点。
 

@@ -7,6 +7,7 @@ services:
     environment:
       BB_BROWSER_DEBUGGER_URL: "http://chrome:9222"
       BB_BROWSER_LISTEN: "0.0.0.0:8787"
+      BB_BROWSER_API_TOKEN: "<caller-a-token>,<caller-b-token>"
       BB_BROWSER_STATE_DIR: "/var/lib/bb-daemon"
       BB_BROWSER_TAB_IDLE_TIMEOUT: "5m"
       BB_BROWSER_OBSERVER_IDLE_TIMEOUT: "5m"

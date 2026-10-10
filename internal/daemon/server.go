@@ -62,6 +62,7 @@ func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	cfg.APITokens = normalizeAPITokens(cfg.APITokens)
 	obsStore := state.NewTabObsStore()
 	s := &Server{
 		cfg:          cfg,
@@ -86,6 +87,7 @@ func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 	s.obsSink = &obsSink{store: st, obs: obsStore, logger: logger}
 	go s.runAuditWriter()
 	s.routes()
+	s.warnUnauthenticatedListen()
 	return s, nil
 }
 
