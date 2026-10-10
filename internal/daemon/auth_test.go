@@ -16,7 +16,7 @@ import (
 
 func TestLoadAPITokens(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "tokens")
-	if err := os.WriteFile(file, []byte("\n # comment\r\n file-token \r\nenv-token\nflag-token\n\t\n"), 0600); err != nil {
+	if err := os.WriteFile(file, []byte("\ufeff\n # comment\r\n file-token \r\nenv-token\nflag-token\n\t\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	tokens, err := LoadAPITokens([]string{" flag-token ", "", "flag-token", "second-flag"}, " env-token, ,flag-token,,env-token ", file)
@@ -87,6 +87,10 @@ func TestV1UnauthorizedDoesNotDispatchOrAudit(t *testing.T) {
 		"extra field":       {"Bearer first-secret extra"},
 		"comma":             {"Bearer first-secret,second-secret"},
 		"duplicate headers": {"Bearer first-secret", "Bearer second-secret"},
+		"proper prefix":     {"Bearer first-secre"},
+		"proper extension":  {"Bearer first-secret-extra"},
+		"second prefix":     {"Bearer second-secre"},
+		"second extension":  {"Bearer second-secret-extra"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			for _, body := range []string{rpcReq(protocol.MethodTabNew, map[string]any{}, 1), "invalid JSON"} {

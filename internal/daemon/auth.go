@@ -19,7 +19,7 @@ func LoadAPITokens(flags []string, env, path string) ([]string, error) {
 		if err != nil {
 			return nil, errors.New("cannot read API token file")
 		}
-		for _, line := range strings.Split(string(data), "\n") {
+		for _, line := range strings.Split(strings.TrimPrefix(string(data), "\ufeff"), "\n") {
 			line = strings.TrimSpace(line)
 			if !strings.HasPrefix(line, "#") {
 				tokens = append(tokens, line)

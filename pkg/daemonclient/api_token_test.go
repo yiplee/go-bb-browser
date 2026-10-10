@@ -66,3 +66,16 @@ func TestPoolBackendAPITokens(t *testing.T) {
 		t.Fatalf("tabs opened on backends: %d, %d", nA, nB)
 	}
 }
+
+func TestWithAPITokenTrimsAndIgnoresEmpty(t *testing.T) {
+	c := NewClient("http://127.0.0.1:0", WithAPIToken("  secret \n"))
+	if got := c.Headers.Get("Authorization"); got != "Bearer secret" {
+		t.Fatalf("Authorization = %q", got)
+	}
+	for _, token := range []string{"", " \t "} {
+		c := NewClient("http://127.0.0.1:0", WithAPIToken(token))
+		if got := c.Headers.Get("Authorization"); got != "" {
+			t.Fatalf("empty token set Authorization = %q", got)
+		}
+	}
+}

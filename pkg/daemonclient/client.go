@@ -30,7 +30,12 @@ type ClientOption func(*Client)
 
 // WithAPIToken adds one API token, equivalent to WithHeader("Authorization", "Bearer "+token).
 // Each client in a Pool can use its own token.
+// Surrounding whitespace is trimmed; an empty token adds no header.
 func WithAPIToken(token string) ClientOption {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return func(*Client) {}
+	}
 	return WithHeader("Authorization", "Bearer "+token)
 }
 
