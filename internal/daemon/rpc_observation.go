@@ -88,9 +88,6 @@ func (s *Server) handleObsQuery(ctx context.Context, w http.ResponseWriter, id j
 	events, cursor, dropped := q(tid, since)
 	if sess, ok := conn.(*browser.Session); ok {
 		stats := sess.ObservationStats(tid, kind)
-		if stats.Cursor > cursor {
-			cursor = stats.Cursor
-		}
 		dropped += stats.Dropped
 	}
 	seq, ok := s.nextSeq(ctx, w, id)

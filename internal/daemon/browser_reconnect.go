@@ -70,7 +70,7 @@ func (s *Server) connectBrowserLocked(ctx context.Context) error {
 	s.browserLastProbe = time.Now()
 	s.watchCDPSession(sess)
 	go s.runTargetSync(ctx, sess)
-	targets, terr := sess.PageTargets()
+	targets, terr := sess.PageTargetsContext(ctx)
 	snaps := s.syncInitialTargets(sess, targets, terr)
 	// Perform the initial managed-tab recovery. If target enumeration failed,
 	// runTargetSync repeats this reconciliation after its successful retry.
