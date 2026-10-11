@@ -24,6 +24,10 @@ type Config struct {
 	// APITokens is the optional whitelist for POST /v1; empty disables authentication.
 	APITokens []string
 
+	// APITokenAllowLoopback exempts direct TCP loopback requests without proxy headers.
+	// Default false; has no effect when APITokens is empty.
+	APITokenAllowLoopback bool
+
 	// MaxBodyBytes caps incoming HTTP request bodies (POST /v1 and similar).
 	MaxBodyBytes int64
 

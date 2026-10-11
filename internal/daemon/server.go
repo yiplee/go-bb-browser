@@ -88,6 +88,7 @@ func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 	go s.runAuditWriter()
 	s.routes()
 	s.warnUnauthenticatedListen()
+	s.warnLoopbackAuthentication()
 	return s, nil
 }
 

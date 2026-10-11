@@ -1,4 +1,7 @@
 # Example Docker Compose layout for bb-daemon.
+# Direct local calls and Tailscale HTTP Serve/Funnel with preserved headers may enable it.
+# Do not enable with TCP forwarding, local proxies that may strip headers, cloudflared,
+# or uncertain proxy paths. Header detection is only a fallback, not the primary defense.
 # Mount a volume for managed-tab idle state so cleanup survives container recreate.
 
 services:
@@ -8,6 +11,8 @@ services:
       BB_BROWSER_DEBUGGER_URL: "http://chrome:9222"
       BB_BROWSER_LISTEN: "0.0.0.0:8787"
       BB_BROWSER_API_TOKEN: "<caller-a-token>,<caller-b-token>"
+      # Do not enable the loopback exemption with Docker port mappings.
+      BB_BROWSER_API_TOKEN_ALLOW_LOOPBACK: "false"
       BB_BROWSER_STATE_DIR: "/var/lib/bb-daemon"
       BB_BROWSER_TAB_IDLE_TIMEOUT: "5m"
       BB_BROWSER_OBSERVER_IDLE_TIMEOUT: "5m"

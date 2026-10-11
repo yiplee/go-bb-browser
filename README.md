@@ -76,6 +76,7 @@ flowchart LR
 | `BB_BROWSER_DEBUGGER_URL` | Chrome DevTools 端点（`host:port` 或 ws/http URL），等价 `--debugger-url` |
 | `BB_BROWSER_LISTEN` | daemon 监听地址，默认 `127.0.0.1:8787` |
 | `BB_BROWSER_API_TOKEN` | daemon API token 白名单，英文逗号分隔，与可重复的 `--api-token` 合并；CLI 使用同名变量或 `--api-token` 发送单个 token（标志覆盖环境变量） |
+| `BB_BROWSER_API_TOKEN_ALLOW_LOOPBACK` | 等价 `--api-token-allow-loopback`，默认 `false`；仅真实 TCP 回环对端且无代理头的 `POST /v1` 免 token；布尔值支持 `true/false`、`1/0`、`t/f` 及其 `strconv.ParseBool` 大小写形式，非法或空值回退 `false`，标志覆盖环境变量 |
 | `BB_BROWSER_API_TOKEN_FILE` | daemon token 文件路径，等价 `--api-token-file`；一行一个 token，忽略空行和 `#` 注释行 |
 | `BB_BROWSER_TAB_IDLE_TIMEOUT` | 自动关闭 daemon 创建的 idle tab 的超时，默认 `5m`；`0` 禁用 |
 | `BB_BROWSER_CDP_WATCHDOG_INTERVAL` | `Browser.getVersion` 探测间隔，默认 `5s` |
@@ -89,12 +90,25 @@ flowchart LR
 
 **可选 API token**：daemon 将重复的 `--api-token`、`BB_BROWSER_API_TOKEN`（英文逗号分隔）和 `--api-token-file` / `BB_BROWSER_API_TOKEN_FILE` 的内容合并，去首尾空白、去重、忽略空项；文件忽略空行和以 `#` 开头的注释行。文件路径的标志覆盖环境变量；文件读取失败会拒绝启动。合并后为空时保持原有行为；未启用且监听非回环地址时只打一条 warn，不拒绝启动。修改白名单需重启 daemon。
 
-启用后，`POST /v1` 必须携带 `Authorization: Bearer <token>`（客户端每次只传白名单中的一个 token），否则返回标准 **HTTP 401**，`Content-Type: text/plain; charset=utf-8`，正文固定为 `unauthorized\n`，并带 `WWW-Authenticate: Bearer`。鉴权在读取请求体、RPC 分发和 audit 前完成，失败请求不会操作浏览器或写 `rpc.jsonl`。`/live`、`/ready`、`/health` 始终免 token。API token 不写入启动日志、错误信息或 RPC audit；用 token 文件可避免 token 出现在 daemon 进程参数中。
+启用 token 后，除下述显式开启的回环豁免外，`POST /v1` 必须携带 `Authorization: Bearer <token>`（客户端每次只传白名单中的一个 token），否则返回标准 **HTTP 401**，`Content-Type: text/plain; charset=utf-8`，正文固定为 `unauthorized\n`，并带 `WWW-Authenticate: Bearer`。鉴权在读取请求体、RPC 分发和 audit 前完成，失败请求不会操作浏览器或写 `rpc.jsonl`。`/live`、`/ready`、`/health` 始终免 token。API token 不写入启动日志、错误信息或 RPC audit；用 token 文件可避免 token 出现在 daemon 进程参数中。
 
 ```bash
 # 文件一行一个 token；此处和部署示例只使用占位符
 bb-daemon --debugger-url 127.0.0.1:9222 --api-token-file /path/to/api-tokens
 BB_BROWSER_API_TOKEN='<caller-token>' bb-browser tab list
+```
+
+**可选回环免 token**：`--api-token-allow-loopback` / `BB_BROWSER_API_TOKEN_ALLOW_LOOPBACK` 默认关闭，修改后需重启。开启且白名单非空时，仅根据 `r.RemoteAddr` 的真实 TCP 对端判断回环（`127.0.0.0/8`、`::1`，含 IPv4 映射 IPv6）；无代理头才直接放行，**不校验 Authorization，即使带错误 token 也放行**。绝不使用 `Host` 或转发头判断本机。未配置 token 时开关无副作用，启动打一条 info；有 token 时启动打一条 warn，不逐请求记录。
+
+请求只要出现 `X-Forwarded-For`、`X-Forwarded-Host`、`X-Forwarded-Proto`、`X-Real-IP`、`Forwarded`、`CF-Connecting-IP`、`CF-Ray`、`True-Client-IP`、`Via`、`X-Forwarded-Server`、`X-Forwarded-Port`、`X-Forwarded-Scheme`、`X-Original-Forwarded-For`、`Forwarded-For`、`X-Client-IP`、`X-Cluster-Client-IP` 或任意 `Tailscale-` 前缀头（头名大小写不敏感，即使值为空），就仍需有效 token。**头检测只是兜底，不是主要防线**；开启前必须确认部署路径。
+
+- 本机直接调用可以开；Tailscale **HTTP 转发**（`serve` / `funnel` 默认模式，代理头完整保留到 daemon）可以开，转发请求会触发兜底，仍需 token。[Serve 官方文档](https://tailscale.com/docs/features/tailscale-serve#identity-headers) 确认用户身份头，且说明 tagged 设备及 Funnel 不带身份头；[官方 HTTP 代理源码](https://github.com/tailscale/tailscale/blob/main/ipn/ipnlocal/serve.go) 还设置 `X-Forwarded-Host`、`X-Forwarded-For`，TLS 时设置 `X-Forwarded-Proto`，Funnel 时设置 `Tailscale-Funnel-Request`。后者未能从官方文档确认，此处依据源码，未实测。
+- **不要开**：Tailscale **TCP 转发**（如 `tailscale serve --tcp` / `--tls-terminated-tcp`）、同机反向代理且可能去头、Docker 端口映射、cloudflared 隧道，或不确定中间有没有代理时。
+
+```bash
+# 仅限确认部署路径后开启；本机直接调用可以省略 token
+bb-daemon --debugger-url 127.0.0.1:9222 --api-token-file /path/to/api-tokens --api-token-allow-loopback
+bb-browser tab list
 ```
 
 **Idle tab 自动清理**：`tab_new` 创建的 tab 会被 daemon 跟踪；在 `BB_BROWSER_TAB_IDLE_TIMEOUT` 内无操作则自动 `tab_close`。tab 相关 JSON-RPC 的 **`method` + 原始 request body** 写入 `rpc.jsonl`；idle 状态维护在内存。**daemon 重启**时先通过 CDP 获取当前存在的 tab，再回放 `rpc.jsonl` 求出这些 tab 的最后活跃时间来恢复 idle 跟踪（短 tab id 由 CDP target id 确定性派生，跨重启稳定）。重启后有约 30s grace。全局 `seq` 以启动时的纳秒时钟为起始值内存自增，无需持久化即可跨重启保持递增。`rpc.jsonl` 超过约 8 MiB 会自动轮转：旧文件保存为 `rpc.jsonl.1`…（保留 3 份），新文件开头会写入当前存活 managed tab 的快照（合成 `tab_new` + 最后活跃时间），因此恢复只需读当前文件即可保持完整。
@@ -109,6 +123,8 @@ services:
       BB_BROWSER_DEBUGGER_URL: "http://chrome:9222"
       BB_BROWSER_LISTEN: "0.0.0.0:8787"
       BB_BROWSER_API_TOKEN: "<caller-a-token>,<caller-b-token>"
+      # Docker 端口映射下不要开启回环豁免
+      BB_BROWSER_API_TOKEN_ALLOW_LOOPBACK: "false"
       BB_BROWSER_STATE_DIR: "/var/lib/bb-daemon"
       BB_BROWSER_TAB_IDLE_TIMEOUT: "5m"
       BB_BROWSER_OBSERVER_IDLE_TIMEOUT: "5m"

@@ -95,3 +95,33 @@ func TestNewLogger(t *testing.T) {
 		t.Fatal("expected invalid level error")
 	}
 }
+
+func TestAPITokenAllowLoopbackFlagAndEnvironment(t *testing.T) {
+	for _, tc := range []struct {
+		env  string
+		args []string
+		want bool
+	}{
+		{"", nil, false},
+		{"true", nil, true},
+		{"1", nil, true},
+		{"TRUE", nil, true},
+		{"t", nil, true},
+		{"false", nil, false},
+		{"0", nil, false},
+		{"invalid", nil, false},
+		{"", []string{"--api-token-allow-loopback"}, true},
+		{"true", []string{"--api-token-allow-loopback=false"}, false},
+		{"false", []string{"--api-token-allow-loopback=true"}, true},
+	} {
+		t.Setenv("BB_BROWSER_API_TOKEN_ALLOW_LOOPBACK", tc.env)
+		fs := flag.NewFlagSet("bb-daemon", flag.ContinueOnError)
+		allow := fs.Bool("api-token-allow-loopback", envOrDefaultBool("BB_BROWSER_API_TOKEN_ALLOW_LOOPBACK", false), "allow loopback")
+		if err := fs.Parse(tc.args); err != nil {
+			t.Fatal(err)
+		}
+		if *allow != tc.want {
+			t.Fatalf("env=%q args=%v: got %v, want %v", tc.env, tc.args, *allow, tc.want)
+		}
+	}
+}
