@@ -1183,6 +1183,111 @@ func TestSplitTabID(t *testing.T) {
 	}
 }
 
+// Integers above 2^53 must survive Pool's tab rewrite. Daemon seq is seeded
+// from UnixNano, so a float64 round-trip replays or skips observation events.
+func TestPool_preservesNanosecondIntegers(t *testing.T) {
+	const (
+		native    = "abcd"
+		bigSeq    = uint64(1760200000000000123)
+		bigSince  = uint64(1760200000000000456)
+		bigCursor = uint64(1760200000000000789)
+		bigEvent  = uint64(1760200000000000999)
+	)
+	seq := strconv.FormatUint(bigSeq, 10)
+	since := strconv.FormatUint(bigSince, 10)
+	cursor := strconv.FormatUint(bigCursor, 10)
+	event := strconv.FormatUint(bigEvent, 10)
+
+	var mu sync.Mutex
+	var networkParams []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1" {
+			http.NotFound(w, r)
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		var req struct {
+			Method string          `json:"method"`
+			ID     json.RawMessage `json:"id"`
+			Params json.RawMessage `json:"params"`
+		}
+		if err := json.Unmarshal(b, &req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		var result string
+		switch req.Method {
+		case protocol.MethodTabNew:
+			result = `{"tab":"` + native + `","seq":` + seq + `}`
+		case protocol.MethodNetwork:
+			mu.Lock()
+			networkParams = append([]byte(nil), req.Params...)
+			mu.Unlock()
+			result = `{"tab":"` + native + `","seq":` + seq + `,"cursor":` + cursor +
+				`,"events":[{"seq":` + event + `,"data":{"n":` + seq + `}}]}`
+		case protocol.MethodEval:
+			result = `{"tab":"` + native + `","seq":` + seq + `,"result":` + seq + `}`
+		default:
+			http.Error(w, "unexpected "+req.Method, http.StatusBadRequest)
+			return
+		}
+		raw, _ := json.Marshal(struct {
+			JSONRPC string          `json:"jsonrpc"`
+			ID      json.RawMessage `json:"id"`
+			Result  json.RawMessage `json:"result"`
+		}{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(result)})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(raw)
+	}))
+	t.Cleanup(srv.Close)
+
+	p, err := NewPool(NewClient(srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	created, err := p.TabNew(ctx, protocol.TabNewParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantTab := FormatTabID("0", native)
+	if created.Tab != wantTab || created.Seq != bigSeq {
+		t.Fatalf("tab_new: tab %q seq %d", created.Tab, created.Seq)
+	}
+
+	sinceN := bigSince
+	obs, err := p.Network(ctx, protocol.ObsQueryParams{Tab: created.Tab, Since: &sinceN})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	params := append([]byte(nil), networkParams...)
+	mu.Unlock()
+	if !strings.Contains(string(params), `"since":`+since) || !strings.Contains(string(params), `"tab":"`+native+`"`) {
+		t.Fatalf("request params: %s", params)
+	}
+	if obs.Tab != wantTab || obs.Seq != bigSeq || obs.Cursor != bigCursor {
+		t.Fatalf("network: tab %q seq %d cursor %d", obs.Tab, obs.Seq, obs.Cursor)
+	}
+	if len(obs.Events) != 1 || obs.Events[0].Seq != bigEvent {
+		t.Fatalf("events: %+v", obs.Events)
+	}
+	var data struct {
+		N uint64 `json:"n"`
+	}
+	if err := json.Unmarshal(obs.Events[0].Data, &data); err != nil || data.N != bigSeq {
+		t.Fatalf("event data: %s (%v)", obs.Events[0].Data, err)
+	}
+
+	ev, err := p.Eval(ctx, protocol.EvalParams{Tab: created.Tab, Script: "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Tab != wantTab || ev.Seq != bigSeq || string(ev.Result) != seq {
+		t.Fatalf("eval: tab %q seq %d result %s", ev.Tab, ev.Seq, ev.Result)
+	}
+}
+
 func (st *fakeDaemon) tabNewCount() int {
 	st.mu.Lock()
 	defer st.mu.Unlock()
