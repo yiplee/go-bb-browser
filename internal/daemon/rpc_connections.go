@@ -37,6 +37,12 @@ type routeConn interface {
 	NetworkRouteCount(tabID target.ID) int
 }
 
+// observationStatsConn is optional. Cursor on the result is the pre-enqueue
+// lastSeen and is not the query cursor; callers may only fold in Dropped.
+type observationStatsConn interface {
+	ObservationStats(target.ID, browser.ObservationKind) browser.ObservationStats
+}
+
 type pageTargetsContextConn interface {
 	PageTargetsContext(context.Context) ([]*target.Info, error)
 }

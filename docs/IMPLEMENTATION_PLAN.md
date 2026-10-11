@@ -220,7 +220,7 @@ daemon **只**使用 **`chromedp.NewRemoteAllocator`**，连接到用户已暴�
 - network、console、errors 在各自第一次查询时启用对应 CDP domain，每次查询续租；默认空闲 5m 后 disable，配置为 0 时保持到 tab 关闭。
 - 首次查询前不保留该观测类型的历史事件。
 - 每个 observed tab 有容量 1024 的非阻塞入口队列。CDP listener 只提取字段、分配全局 seq 和 `select` 投递；worker 负责 JSON 编码与 ring 写入。
-- 队列满时丢弃并计数，listener 不等待。响应的 `dropped` 合并入口丢弃和 ring 淘汰，`cursor` 至少推进到 listener 已见的最大 seq。
+- 队列满时丢弃并计数，listener 不等待。响应的 `dropped` 合并入口丢弃和 ring 淘汰。`cursor` 只反映 ring 里已经写入的事件，不用 listener 入队前记下的 lastSeen 抬高，否则队列积压时客户端会跳过尚未落盘的 seq。
 - observer 租约到期只取消 listener 并 disable domain，不取消仍存活的 chromedp target context，避免意外关闭 Chrome tab。
 
 ---

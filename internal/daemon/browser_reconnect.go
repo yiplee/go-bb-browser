@@ -10,6 +10,7 @@ import (
 	"github.com/chromedp/cdproto/target"
 	"github.com/yiplee/go-bb-browser/internal/browser"
 	"github.com/yiplee/go-bb-browser/internal/state"
+	"github.com/yiplee/go-bb-browser/internal/timeout"
 )
 
 var errBrowserNotConnected = errors.New("browser not connected")
@@ -70,7 +71,11 @@ func (s *Server) connectBrowserLocked(ctx context.Context) error {
 	s.browserLastProbe = time.Now()
 	s.watchCDPSession(sess)
 	go s.runTargetSync(ctx, sess)
-	targets, terr := sess.PageTargets()
+	// Parent ctx has no deadline. Keep the old PageTargets 60s cap so a hung
+	// Target.getTargets cannot block Listen forever, while SIGTERM still cancels.
+	listCtx, cancel := context.WithTimeout(ctx, timeout.Operation)
+	targets, terr := sess.PageTargetsContext(listCtx)
+	cancel()
 	snaps := s.syncInitialTargets(sess, targets, terr)
 	// Perform the initial managed-tab recovery. If target enumeration failed,
 	// runTargetSync repeats this reconciliation after its successful retry.
