@@ -136,10 +136,7 @@ func newOpenCmd() *cobra.Command {
 			}
 			if jsonOut {
 				fmt.Println(string(b))
-				if rpcHasError(b) {
-					return errors.New("json-rpc error in response")
-				}
-				return nil
+				return rpcEnvelopeError(b)
 			}
 			if err := rpcEnvelopeError(b); err != nil {
 				return err
@@ -716,7 +713,7 @@ func newObsCmd(use, method, clearMethod, short string) *cobra.Command {
 				return err
 			}
 			for _, ev := range env.Result.Events {
-				rawLine := formatObsLine(method, ev.Data)
+				rawLine := formatObsLine(ev.Data)
 				if argFilter != "" && !strings.Contains(strings.ToLower(rawLine), strings.ToLower(argFilter)) {
 					continue
 				}
@@ -739,41 +736,15 @@ func newObsCmd(use, method, clearMethod, short string) *cobra.Command {
 	return c
 }
 
-func formatObsLine(_ string, data json.RawMessage) string {
+func formatObsLine(data json.RawMessage) string {
 	var obj map[string]any
 	if err := json.Unmarshal(data, &obj); err != nil {
 		return strings.TrimSpace(string(data))
 	}
-	urlStr := ""
-	for _, k := range []string{"url", "URL"} {
-		if v, ok := obj[k].(string); ok {
-			urlStr = v
-			break
-		}
-	}
-	kind, _ := obj["kind"].(string)
-	hmethod := ""
-	if m, ok := obj["method"].(string); ok {
-		hmethod = m
-	}
-	status := ""
-	if st, ok := obj["status"].(float64); ok {
-		status = fmt.Sprintf("%.0f", st)
-	}
-	if urlStr != "" || kind != "" {
-		line := fmt.Sprintf("%s %s", hmethod, urlStr)
-		if status != "" {
-			line += fmt.Sprintf(" → %s", status)
-		}
-		if kind != "" {
-			line = fmt.Sprintf("[%s] %s", kind, line)
-		}
-		return strings.TrimSpace(line)
-	}
 	if typ, ok := obj["type"].(string); ok {
 		return typ + " " + string(data)
 	}
-	if txt, ok := obj["text"].(string); ok {
+	if txt, ok := obj["text"].(string); ok && txt != "" {
 		return txt
 	}
 	return strings.TrimSpace(string(data))
@@ -1176,7 +1147,7 @@ func rpcEnvelopeError(b []byte) error {
 		Error json.RawMessage `json:"error"`
 	}
 	if err := json.Unmarshal(b, &env); err != nil {
-		return nil
+		return fmt.Errorf("decode response: %w", err)
 	}
 	if len(env.Error) == 0 || string(env.Error) == "null" {
 		return nil
@@ -1261,24 +1232,17 @@ func cmdRPC(ctx context.Context, base string, jsonOut bool, method string, param
 	}
 	if jsonOut {
 		fmt.Println(string(b))
-		if rpcHasError(b) {
-			return errors.New("json-rpc error in response")
-		}
-		return nil
+		return rpcEnvelopeError(b)
 	}
 	if err := rpcEnvelopeError(b); err != nil {
 		return err
 	}
 	var env struct {
-		Result json.RawMessage  `json:"result"`
-		Error  *json.RawMessage `json:"error"`
+		Result json.RawMessage `json:"result"`
 	}
 	if err := json.Unmarshal(b, &env); err != nil {
 		fmt.Println(string(b))
 		return fmt.Errorf("decode response: %w", err)
-	}
-	if env.Error != nil {
-		return fmt.Errorf("json-rpc error: %s", string(*env.Error))
 	}
 	if len(env.Result) > 0 {
 		var pretty bytes.Buffer
@@ -1290,16 +1254,6 @@ func cmdRPC(ctx context.Context, base string, jsonOut bool, method string, param
 		}
 	}
 	return nil
-}
-
-func rpcHasError(body []byte) bool {
-	var env struct {
-		Error json.RawMessage `json:"error"`
-	}
-	if json.Unmarshal(body, &env) != nil {
-		return false
-	}
-	return len(env.Error) > 0 && string(env.Error) != "null"
 }
 
 func envOrDefault(key, fallback string) string {
