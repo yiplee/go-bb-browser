@@ -264,11 +264,19 @@ func TestV1LoopbackExemptionRequiresToken(t *testing.T) {
 		{"missing port", "127.0.0.1", "", true},
 		{"invalid address", "invalid", "", true},
 		{"empty address", "", "", true},
+		{"empty port IPv4", "127.0.0.1:", "", true},
+		{"empty port IPv6", "[::1]:", "", true},
+		{"non-numeric port IPv4", "127.0.0.1:bogus", "", true},
+		{"non-numeric port IPv6", "[::1]:bogus", "", true},
+		{"port too large", "127.0.0.1:65536", "", true},
+		{"signed port", "127.0.0.1:+80", "", true},
 	}
 	// Independent of the implementation's list, so removing a header cannot weaken coverage.
 	for _, header := range []string{
 		"X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-IP",
 		"Forwarded", "CF-Connecting-IP", "CF-Ray", "True-Client-IP", "Via",
+		"X-Forwarded-Server", "X-Forwarded-Port", "X-Forwarded-Scheme", "X-Original-Forwarded-For",
+		"Forwarded-For", "X-Client-IP", "X-Cluster-Client-IP",
 		"Tailscale-User-Login", "Tailscale-Funnel-Request", "Tailscale-Unknown", "Tailscale-",
 	} {
 		for _, variant := range []string{header, strings.ToLower(header), strings.ToUpper(header)} {

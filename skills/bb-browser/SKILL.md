@@ -36,7 +36,7 @@ bb-browser close
 
 全局选项：`--url`（daemon 根 URL）、`--tab <短 id>`（多数命令）、`--json`（原始 JSON-RPC）。
 
-daemon 启用 API token 时，CLI 用 `--api-token <token>` 或 `BB_BROWSER_API_TOKEN` 提供一个 token（标志覆盖环境变量），自动向 `POST /v1` 加 `Authorization: Bearer <token>`。daemon 合并可重复的 `--api-token`、逗号分隔的 `BB_BROWSER_API_TOKEN` 和 `--api-token-file` / `BB_BROWSER_API_TOKEN_FILE`（一行一个，忽略空行和 `#` 注释）；去空白、空项、重复项后为空则不启用。文件路径标志覆盖环境变量，文件读取失败拒绝启动，白名单修改需重启。认证失败返回标准 HTTP 401、纯文本 `unauthorized\n`，不执行 RPC 或写 `rpc.jsonl`；`/live`、`/ready`、`/health` 免 token。不要输出或记录 token；无 token 且非回环监听只告警。
+daemon 启用 API token 时，CLI 用 `--api-token <token>` 或 `BB_BROWSER_API_TOKEN` 提供一个 token（标志覆盖环境变量），自动向 `POST /v1` 加 `Authorization: Bearer <token>`。daemon 合并可重复的 `--api-token`、逗号分隔的 `BB_BROWSER_API_TOKEN` 和 `--api-token-file` / `BB_BROWSER_API_TOKEN_FILE`（一行一个，忽略空行和 `#` 注释）；去空白、空项、重复项后为空则不启用。文件路径标志覆盖环境变量，文件读取失败拒绝启动，白名单修改需重启。认证失败返回标准 HTTP 401、纯文本 `unauthorized\n`，不执行 RPC 或写 `rpc.jsonl`；`/live`、`/ready`、`/health` 免 token。不要输出或记录 token；无 token 且非回环监听只告警。可选 `--api-token-allow-loopback` / `BB_BROWSER_API_TOKEN_ALLOW_LOOPBACK`（默认关闭）让真实回环对端且不带任何代理头的 `POST /v1` 免 token；前面有同机代理、TCP 转发、Docker 端口映射或不确定时不要开。
 
 ## 文档（本仓库）
 

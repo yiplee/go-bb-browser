@@ -7,7 +7,7 @@
 
 环境变量：**`BB_BROWSER_URL`**（CLI 默认为 `http://127.0.0.1:8787`）。
 
-CLI `--api-token` / `BB_BROWSER_API_TOKEN` 发送单个 `Authorization: Bearer <token>`（标志优先）。daemon 的可重复 `--api-token`、逗号分隔 `BB_BROWSER_API_TOKEN`、`--api-token-file` / `BB_BROWSER_API_TOKEN_FILE` 合并为白名单，去首尾空白、空项和重复项；文件一行一个，忽略空行与 `#` 注释行。白名单为空则不鉴权；更改需重启。鉴权失败是标准 **HTTP 401**，纯文本正文 `unauthorized\n`，并带 `WWW-Authenticate: Bearer`，不是 JSON-RPC envelope；失败请求不读正文、不执行 RPC、不写 audit。`/live`、`/ready`、`/health` 免 token，日志和错误信息不得输出 token。
+CLI `--api-token` / `BB_BROWSER_API_TOKEN` 发送单个 `Authorization: Bearer <token>`（标志优先）。daemon 的可重复 `--api-token`、逗号分隔 `BB_BROWSER_API_TOKEN`、`--api-token-file` / `BB_BROWSER_API_TOKEN_FILE` 合并为白名单，去首尾空白、空项和重复项；文件一行一个，忽略空行与 `#` 注释行。白名单为空则不鉴权；更改需重启。鉴权失败是标准 **HTTP 401**，纯文本正文 `unauthorized\n`，并带 `WWW-Authenticate: Bearer`，不是 JSON-RPC envelope；失败请求不读正文、不执行 RPC、不写 audit。`/live`、`/ready`、`/health` 免 token，日志和错误信息不得输出 token。可选 `--api-token-allow-loopback` / `BB_BROWSER_API_TOKEN_ALLOW_LOOPBACK`（默认关闭）让真实回环对端且不带任何代理头的 `POST /v1` 免 token，部署限制见 README。
 
 ## 已实现方法（节选）
 

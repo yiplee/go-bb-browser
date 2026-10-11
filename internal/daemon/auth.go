@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -14,6 +15,8 @@ import (
 var proxyHeaders = []string{
 	"X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-IP",
 	"Forwarded", "CF-Connecting-IP", "CF-Ray", "True-Client-IP", "Via",
+	"X-Forwarded-Server", "X-Forwarded-Port", "X-Forwarded-Scheme", "X-Original-Forwarded-For",
+	"Forwarded-For", "X-Client-IP", "X-Cluster-Client-IP",
 }
 
 // LoadAPITokens merges flags, comma-separated environment tokens and a token file.
@@ -74,8 +77,12 @@ func (s *Server) authorized(r *http.Request) bool {
 }
 
 func directLoopbackRequest(r *http.Request) bool {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	host, port, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil || !net.ParseIP(host).IsLoopback() {
+		return false
+	}
+	// net/http always writes a numeric port; anything else is malformed, so fail closed.
+	if _, err := strconv.ParseUint(port, 10, 16); err != nil {
 		return false
 	}
 	for name := range r.Header {
