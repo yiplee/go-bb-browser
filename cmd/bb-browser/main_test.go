@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -57,5 +58,40 @@ func TestCLIHelpDoesNotExposeAPIToken(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "help-secret") || !strings.Contains(out.String(), "--api-token") {
 		t.Fatal("help omitted the flag or exposed the token")
+	}
+}
+
+func TestFormatObsLine(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		data string
+		want string
+	}{
+		{
+			name: "log entry with url prints text",
+			data: `{"source":"javascript","level":"error","text":"failed to fetch","url":"https://example.com/app.js","lineNumber":12}`,
+			want: "failed to fetch",
+		},
+		{
+			name: "exception text",
+			data: `{"text":"Uncaught TypeError","lineNumber":3}`,
+			want: "Uncaught TypeError",
+		},
+		{
+			name: "empty text falls back to raw json",
+			data: `{"text":"","url":"https://example.com/app.js"}`,
+			want: `{"text":"","url":"https://example.com/app.js"}`,
+		},
+		{
+			name: "console type",
+			data: `{"type":"warning","args":[]}`,
+			want: `warning {"type":"warning","args":[]}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := formatObsLine(json.RawMessage(tc.data)); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
