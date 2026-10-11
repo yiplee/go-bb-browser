@@ -35,6 +35,7 @@ func run() int {
 	var apiTokens apiTokenFlags
 	flag.Var(&apiTokens, "api-token", "allowed API token (repeatable; merged with BB_BROWSER_API_TOKEN and token file)")
 	apiTokenFile := flag.String("api-token-file", envOrDefault("BB_BROWSER_API_TOKEN_FILE", ""), "API token file (one token per line; blank and # comment lines ignored)")
+	apiTokenAllowLoopback := flag.Bool("api-token-allow-loopback", envOrDefaultBool("BB_BROWSER_API_TOKEN_ALLOW_LOOPBACK", false), "exempt direct TCP loopback requests without proxy headers from API tokens (unsafe with local proxies that omit headers)")
 	tabIdleTimeout := flag.String("tab-idle-timeout", envOrDefault("BB_BROWSER_TAB_IDLE_TIMEOUT", "5m"), "close daemon-created tabs after this idle period (0 disables)")
 	watchdogInterval := flag.String("cdp-watchdog-interval", envOrDefault("BB_BROWSER_CDP_WATCHDOG_INTERVAL", "5s"), "interval between Browser.getVersion watchdog probes")
 	watchdogTimeout := flag.String("cdp-watchdog-timeout", envOrDefault("BB_BROWSER_CDP_WATCHDOG_TIMEOUT", "2s"), "timeout for one CDP watchdog probe")
@@ -78,16 +79,17 @@ func run() int {
 		return 2
 	}
 	cfg := daemon.Config{
-		APITokens:           tokens,
-		DebuggerURL:         *debuggerURL,
-		ListenAddr:          *listen,
-		TabIdleTimeout:      idleTimeout,
-		CDPWatchdogInterval: wdInterval,
-		CDPWatchdogTimeout:  wdTimeout,
-		CDPWatchdogFailures: *watchdogFailures,
-		ObserverIdleTimeout: obsIdle,
-		StateDir:            *stateDir,
-		MaxLogBytes:         *maxLogBytes,
+		APITokens:             tokens,
+		APITokenAllowLoopback: *apiTokenAllowLoopback,
+		DebuggerURL:           *debuggerURL,
+		ListenAddr:            *listen,
+		TabIdleTimeout:        idleTimeout,
+		CDPWatchdogInterval:   wdInterval,
+		CDPWatchdogTimeout:    wdTimeout,
+		CDPWatchdogFailures:   *watchdogFailures,
+		ObserverIdleTimeout:   obsIdle,
+		StateDir:              *stateDir,
+		MaxLogBytes:           *maxLogBytes,
 	}
 	if err := cfg.Validate(); err != nil {
 		fmt.Fprintf(os.Stderr, "config: %v\n", err)
@@ -176,6 +178,15 @@ func envOrDefaultInt(key string, fallback int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
+		}
+	}
+	return fallback
+}
+
+func envOrDefaultBool(key string, fallback bool) bool {
+	if v := os.Getenv(key); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
 		}
 	}
 	return fallback

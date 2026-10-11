@@ -9,6 +9,13 @@ import (
 	"strings"
 )
 
+// proxyHeaders disable the loopback exemption whenever present, even if empty.
+// Tailscale-* headers are checked separately as a case-insensitive prefix.
+var proxyHeaders = []string{
+	"X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-IP",
+	"Forwarded", "CF-Connecting-IP", "CF-Ray", "True-Client-IP", "Via",
+}
+
 // LoadAPITokens merges flags, comma-separated environment tokens and a token file.
 // File errors deliberately omit the path and contents, which may contain secrets.
 func LoadAPITokens(flags []string, env, path string) ([]string, error) {
@@ -46,6 +53,9 @@ func (s *Server) authorized(r *http.Request) bool {
 	if len(s.cfg.APITokens) == 0 {
 		return true
 	}
+	if s.cfg.APITokenAllowLoopback && directLoopbackRequest(r) {
+		return true
+	}
 	headers := r.Header.Values("Authorization")
 	var token string
 	valid := false
@@ -61,6 +71,35 @@ func (s *Server) authorized(r *http.Request) bool {
 		matched |= subtle.ConstantTimeCompare([]byte(token), []byte(allowed))
 	}
 	return valid && matched != 0
+}
+
+func directLoopbackRequest(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil || !net.ParseIP(host).IsLoopback() {
+		return false
+	}
+	for name := range r.Header {
+		if strings.HasPrefix(strings.ToLower(name), "tailscale-") {
+			return false
+		}
+		for _, proxyHeader := range proxyHeaders {
+			if strings.EqualFold(name, proxyHeader) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (s *Server) warnLoopbackAuthentication() {
+	if !s.cfg.APITokenAllowLoopback {
+		return
+	}
+	if len(s.cfg.APITokens) == 0 {
+		s.logger.Info("API token loopback exemption has no effect because no API tokens are configured")
+		return
+	}
+	s.logger.Warn("direct loopback requests without proxy headers are exempt from API tokens; do not enable with a local proxy that may omit headers")
 }
 
 func (s *Server) warnUnauthenticatedListen() {

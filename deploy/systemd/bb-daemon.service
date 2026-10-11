@@ -4,6 +4,11 @@ ExecStart=%h/.local/bin/bb-daemon --debugger-url http://127.0.0.1:9222
 # Optional API token whitelist; replace placeholders before enabling.
 # Environment="BB_BROWSER_API_TOKEN=<caller-a-token>,<caller-b-token>"
 # Or use Environment=BB_BROWSER_API_TOKEN_FILE=/path/to/api-tokens
+# Optional direct loopback exemption (default false); requires configured tokens.
+# Environment=BB_BROWSER_API_TOKEN_ALLOW_LOOPBACK=true
+# Direct local calls or Tailscale HTTP Serve/Funnel with preserved headers may enable it.
+# Do not enable with TCP forwarding, local proxies that may strip headers, Docker
+# port mappings, cloudflared, or uncertain proxy paths. Header detection is only a fallback.
 Restart=on-failure
 RestartSec=2s
 KillSignal=SIGTERM
