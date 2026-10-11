@@ -213,6 +213,14 @@ func (s *Server) closeExpiredTabs(ctx context.Context) {
 			continue
 		}
 		err := s.closeTabByShortLocked(ctx, conn, short)
+		if err != nil && browser.ErrorKindOf(err) == browser.ErrorTargetGone {
+			// Idle cleanup is complete when Chrome has already removed the target.
+			// Keep explicit tab_close RPC errors unchanged.
+			s.removeTargetState(tid)
+			s.forgetTabManaged(tid)
+			unlock()
+			continue
+		}
 		unlock()
 		if err != nil {
 			if errors.Is(err, errTabCloseUnknownID) {

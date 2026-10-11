@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +15,8 @@ import (
 	"time"
 
 	"github.com/chromedp/cdproto/target"
+	"github.com/yiplee/go-bb-browser/internal/browser"
+	"github.com/yiplee/go-bb-browser/internal/state"
 	"github.com/yiplee/go-bb-browser/internal/store"
 	"github.com/yiplee/go-bb-browser/pkg/protocol"
 )
@@ -115,6 +119,116 @@ func TestTabIdleClosesManagedTab(t *testing.T) {
 
 	if len(fc.infos) != 0 {
 		t.Fatalf("managed tab not closed: %#v", fc.infos)
+	}
+}
+
+func TestTabIdleCloseTargetErrors(t *testing.T) {
+	missing := errors.New("No target with given id found")
+	for _, tc := range []struct {
+		name string
+		err  error
+		gone bool
+	}{
+		{"missing target", missing, true},
+		{"wrapped missing target", fmt.Errorf("close target: %w", missing), true},
+		{"wrapped typed target gone", fmt.Errorf("close target: %w", &browser.CDPError{
+			Kind: browser.ErrorTargetGone, Op: "Target.closeTarget", Err: errors.New("target removed while attaching"),
+		}), true},
+		{"target closed", errors.New("Target closed"), true},
+		{"no such target", errors.New("No such target"), true},
+		{"other CDP error", errors.New("Internal error (-32603)"), false},
+		{"transport error", errors.New("websocket: close 1006"), false},
+		{"wrapped timeout", fmt.Errorf("close target: %w", context.DeadlineExceeded), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fc := &fakeConn{closeErr: tc.err}
+			srv := newIdleTestServer(fc, time.Minute)
+			var logs bytes.Buffer
+			srv.logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+			tid := target.ID("ABCDEF123456")
+			short := srv.tabs.RegisterPageTarget(tid)
+			srv.tabIdle.MarkManagedAt(tid, time.Now().Add(-2*time.Minute))
+			seq, err := srv.store.NextSeq()
+			if err != nil {
+				t.Fatal(err)
+			}
+			data := json.RawMessage(`{"message":"recorded before cleanup"}`)
+			srv.obsStore.PushNetwork(tid, seq, data)
+			srv.obsStore.PushConsole(tid, seq, data)
+			srv.obsStore.PushError(tid, seq, data)
+
+			for round := 1; round <= 2; round++ {
+				srv.closeExpiredTabs(context.Background())
+				wantWarnings, wantEvents := round, 1
+				if tc.gone {
+					wantWarnings, wantEvents = 0, 0
+				}
+				if got := bytes.Count(logs.Bytes(), []byte("level=WARN")); got != wantWarnings {
+					t.Fatalf("round %d: warnings = %d, want %d; logs: %s", round, got, wantWarnings, &logs)
+				}
+				if _, present := srv.tabs.Lookup(short); present == tc.gone {
+					t.Fatalf("round %d: registry present = %v, target gone = %v", round, present, tc.gone)
+				}
+				expired := srv.tabIdle.Expired(time.Now(), time.Minute)
+				if tc.gone {
+					if _, present := srv.tabIdle.Snapshot()[tid]; present || len(expired) != 0 {
+						t.Fatalf("round %d: removed target still tracked or expired: %v", round, expired)
+					}
+					srv.tabMuOps.Lock()
+					_, retained := srv.tabCDPLocks[short]
+					srv.tabMuOps.Unlock()
+					if retained {
+						t.Fatal("removed target's keyed lock retained")
+					}
+				} else if len(expired) != 1 || expired[0] != tid {
+					t.Fatalf("round %d: failed target not retained for retry: %v", round, expired)
+				}
+				for name, query := range map[string]func(target.ID, uint64) ([]state.ObsEvent, uint64, uint64){
+					"network": srv.obsStore.QueryNetwork,
+					"console": srv.obsStore.QueryConsole,
+					"errors":  srv.obsStore.QueryErrors,
+				} {
+					if events, _, _ := query(tid, 0); len(events) != wantEvents {
+						t.Fatalf("round %d: %s events = %d, want %d", round, name, len(events), wantEvents)
+					}
+				}
+			}
+			if !tc.gone {
+				fc.closeErr = nil
+				srv.closeExpiredTabs(context.Background())
+				if _, present := srv.tabIdle.Snapshot()[tid]; present {
+					t.Fatal("successful retry did not forget target")
+				}
+			}
+		})
+	}
+}
+
+func TestTabCloseRPCErrorSemanticsUnchanged(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		registered bool
+		code       int
+		message    string
+	}{
+		{"unknown short id", false, protocol.CodeInvalidParams, "unknown tab id"},
+		{"registered target gone", true, protocol.CodeServerError, "failed to close tab"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newIdleTestServer(&fakeConn{closeErr: errors.New("No target with given id found")}, time.Minute)
+			tab := "unknown"
+			if tc.registered {
+				tab = srv.tabs.RegisterPageTarget("ABCDEF123456")
+			}
+			rec := postRPC(t, srv, rpcReq(protocol.MethodTabClose, map[string]any{"tab": tab}, 1))
+			var env protocol.Response
+			if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+				t.Fatal(err)
+			}
+			if env.Error == nil || env.Error.Code != tc.code || env.Error.Message != tc.message || len(env.Result) != 0 {
+				t.Fatalf("unexpected tab_close response: %s", rec.Body.String())
+			}
+		})
 	}
 }
 
