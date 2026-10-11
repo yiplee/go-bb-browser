@@ -545,6 +545,9 @@ func jsonTabField(v any) string {
 	return tabFromRawResult(b)
 }
 
+// replaceJSONTab swaps only the tab field. Other values stay raw JSON so
+// integers above 2^53 (seq, since, cursor, nested event seqs) are not rounded
+// through float64.
 func replaceJSONTab(params any, short string) (any, error) {
 	if params == nil {
 		return map[string]any{"tab": short}, nil
@@ -553,14 +556,17 @@ func replaceJSONTab(params any, short string) (any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal params: %w", err)
 	}
-	var m map[string]any
+	var m map[string]json.RawMessage
 	if err := json.Unmarshal(b, &m); err != nil {
 		return nil, fmt.Errorf("decode params: %w", err)
 	}
 	if m == nil {
-		m = map[string]any{}
+		m = map[string]json.RawMessage{}
 	}
-	m["tab"] = short
+	m["tab"], err = json.Marshal(short)
+	if err != nil {
+		return nil, fmt.Errorf("marshal tab: %w", err)
+	}
 	return m, nil
 }
 
@@ -620,15 +626,20 @@ func copyResult(dst any, src any) error {
 	return nil
 }
 
+// setJSONTab rewrites only the tab field and leaves every other value untouched.
 func setJSONTab(raw json.RawMessage, tab string) json.RawMessage {
 	if len(raw) == 0 {
 		return raw
 	}
-	var m map[string]any
+	var m map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &m); err != nil || m == nil {
 		return raw
 	}
-	m["tab"] = tab
+	tabJSON, err := json.Marshal(tab)
+	if err != nil {
+		return raw
+	}
+	m["tab"] = tabJSON
 	out, err := json.Marshal(m)
 	if err != nil {
 		return raw
