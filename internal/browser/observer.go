@@ -27,6 +27,7 @@ const (
 )
 
 type ObservationStats struct {
+	// Cursor is the pre-enqueue lastSeen and must not be used as the query cursor.
 	Cursor  uint64
 	Dropped uint64
 }
