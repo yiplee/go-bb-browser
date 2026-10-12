@@ -25,12 +25,16 @@ type NetworkRouteRule struct {
 // routeCDP is the worker's CDP entry. Tests replace it; the listen callback must not call it.
 var routeCDP = runCDP
 
+// listenTarget is chromedp.ListenTarget. Tests replace it to count listeners.
+var listenTarget = chromedp.ListenTarget
+
 type routeState struct {
 	mu    sync.Mutex
 	cdpMu sync.Mutex
 
 	rules   map[target.ID][]NetworkRouteRule
 	workers map[target.ID]*routeWorker
+	gen     map[target.ID]uint64
 }
 
 type routeWorker struct {
@@ -47,6 +51,7 @@ func newRouteState() *routeState {
 	return &routeState{
 		rules:   make(map[target.ID][]NetworkRouteRule),
 		workers: make(map[target.ID]*routeWorker),
+		gen:     make(map[target.ID]uint64),
 	}
 }
 
@@ -145,7 +150,7 @@ func (s *Session) syncRoutes(ctx context.Context, rs *routeState, tabID target.I
 	rs.cdpMu.Lock()
 	defer rs.cdpMu.Unlock()
 
-	rules := rs.snapshot(tabID)
+	rules, gen := rs.snapshot(tabID)
 	if len(rules) == 0 {
 		err := runCDPWithContext(tabCtx, ctx, chromedp.ActionFunc(func(c context.Context) error {
 			return fetch.Disable().Do(c)
@@ -156,8 +161,10 @@ func (s *Session) syncRoutes(ctx context.Context, rs *routeState, tabID target.I
 		return err
 	}
 
-	w := rs.ensureWorker(tabID, tabCtx)
-	w.startListening(tabCtx)
+	w := rs.ensureWorker(tabID, tabCtx, gen)
+	if w == nil || !w.startListening(tabCtx, rs, tabID, gen) {
+		return nil
+	}
 	patterns := routePatterns(rules)
 	if len(patterns) == 0 {
 		return nil
@@ -179,16 +186,21 @@ func routePatterns(rules []NetworkRouteRule) []*fetch.RequestPattern {
 	return patterns
 }
 
-func (rs *routeState) snapshot(tabID target.ID) []NetworkRouteRule {
+func (rs *routeState) snapshot(tabID target.ID) ([]NetworkRouteRule, uint64) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
-	src := rs.rules[tabID]
-	if len(src) == 0 {
-		return nil
+	var out []NetworkRouteRule
+	if src := rs.rules[tabID]; len(src) > 0 {
+		out = make([]NetworkRouteRule, len(src))
+		copy(out, src)
 	}
-	out := make([]NetworkRouteRule, len(src))
-	copy(out, src)
-	return out
+	return out, rs.gen[tabID]
+}
+
+func (rs *routeState) generation(tabID target.ID) uint64 {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	return rs.gen[tabID]
 }
 
 func (rs *routeState) worker(tabID target.ID) *routeWorker {
@@ -197,8 +209,12 @@ func (rs *routeState) worker(tabID target.ID) *routeWorker {
 	return rs.workers[tabID]
 }
 
-func (rs *routeState) ensureWorker(tabID target.ID, tabCtx context.Context) *routeWorker {
+func (rs *routeState) ensureWorker(tabID target.ID, tabCtx context.Context, gen uint64) *routeWorker {
 	rs.mu.Lock()
+	if rs.gen[tabID] != gen || len(rs.rules[tabID]) == 0 {
+		rs.mu.Unlock()
+		return nil
+	}
 	w := rs.workers[tabID]
 	if w != nil {
 		rs.mu.Unlock()
@@ -218,17 +234,34 @@ func (rs *routeState) ensureWorker(tabID target.ID, tabCtx context.Context) *rou
 	return w
 }
 
-func (w *routeWorker) startListening(tabCtx context.Context) {
+func (w *routeWorker) startListening(tabCtx context.Context, rs *routeState, tabID target.ID, gen uint64) bool {
+	live := func() bool { return rs.generation(tabID) == gen }
+	if !live() {
+		return false
+	}
 	w.mu.Lock()
 	if w.listening {
 		w.mu.Unlock()
-		return
+		if live() {
+			return true
+		}
+		w.stopListening()
+		return false
 	}
 	ctx, cancel := context.WithCancel(tabCtx)
 	w.listenCancel = cancel
 	w.listening = true
 	w.mu.Unlock()
-	chromedp.ListenTarget(ctx, w.onPaused)
+	if !live() {
+		w.stopListening()
+		return false
+	}
+	listenTarget(ctx, w.onPaused)
+	if !live() {
+		w.stopListening()
+		return false
+	}
+	return true
 }
 
 func (w *routeWorker) stopListening() {
@@ -290,7 +323,8 @@ func (w *routeWorker) dispatchAll(rs *routeState, tabID target.ID, tabCtx contex
 		if ev == nil {
 			return
 		}
-		applyPaused(tabCtx, rs.snapshot(tabID), ev)
+		rules, _ := rs.snapshot(tabID)
+		applyPaused(tabCtx, rules, ev)
 	}
 }
 
@@ -409,6 +443,10 @@ func (s *Session) ClearRoutesForTarget(tabID target.ID) {
 	rs := s.routeState
 	rs.mu.Lock()
 	delete(rs.rules, tabID)
+	if rs.gen == nil {
+		rs.gen = make(map[target.ID]uint64)
+	}
+	rs.gen[tabID]++
 	w := rs.workers[tabID]
 	delete(rs.workers, tabID)
 	rs.mu.Unlock()
