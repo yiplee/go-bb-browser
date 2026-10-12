@@ -85,9 +85,16 @@ Examples:
 
 			chromeArgs := buildChromeArgs(profileDir, bindAddr, port, headless, extraArgs, startURL)
 
-			// Only this command handles SIGINT/SIGTERM. Otherwise Ctrl+C kills the
-			// CLI while a Setsid Chrome keeps the debugging port.
-			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			// Detach starts Chrome in its own session, so a failed wait or
+			// SIGINT/SIGTERM has to kill that process. Foreground Chrome stays
+			// in the process group and exits on the terminal's SIGINT.
+			var ctx context.Context
+			var stop context.CancelFunc
+			if detach {
+				ctx, stop = signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			} else {
+				ctx, stop = context.WithCancel(cmd.Context())
+			}
 			defer stop()
 
 			var proc *exec.Cmd
@@ -113,14 +120,12 @@ Examples:
 
 			if waitReady {
 				if err := waitForCDP(ctx, bindAddr, port, readyTO); err != nil {
-					stopStartedProcess(proc)
+					if detach {
+						stopStartedProcess(proc)
+					}
 					return fmt.Errorf("waiting for CDP endpoint: %w", err)
 				}
 				fmt.Fprintln(os.Stderr, "chrome: CDP endpoint ready")
-			}
-			if err := context.Cause(ctx); err != nil {
-				stopStartedProcess(proc)
-				return err
 			}
 
 			if detach {
@@ -152,8 +157,7 @@ Examples:
 	return c
 }
 
-// stopStartedProcess kills and reaps Chrome when launch will not detach.
-// Cmd.Wait also joins CommandContext's watcher.
+// stopStartedProcess kills and reaps a detached Chrome that launch will not leave running.
 func stopStartedProcess(cmd *exec.Cmd) {
 	if cmd == nil || cmd.Process == nil {
 		return
