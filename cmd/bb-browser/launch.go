@@ -7,9 +7,11 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -83,8 +85,17 @@ Examples:
 
 			chromeArgs := buildChromeArgs(profileDir, bindAddr, port, headless, extraArgs, startURL)
 
-			ctx, cancel := context.WithCancel(cmd.Context())
-			defer cancel()
+			// Detach starts Chrome in its own session, so a failed wait or
+			// SIGINT/SIGTERM has to kill that process. Foreground Chrome stays
+			// in the process group and exits on the terminal's SIGINT.
+			var ctx context.Context
+			var stop context.CancelFunc
+			if detach {
+				ctx, stop = signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			} else {
+				ctx, stop = context.WithCancel(cmd.Context())
+			}
+			defer stop()
 
 			var proc *exec.Cmd
 			if detach {
@@ -109,6 +120,9 @@ Examples:
 
 			if waitReady {
 				if err := waitForCDP(ctx, bindAddr, port, readyTO); err != nil {
+					if detach {
+						stopStartedProcess(proc)
+					}
 					return fmt.Errorf("waiting for CDP endpoint: %w", err)
 				}
 				fmt.Fprintln(os.Stderr, "chrome: CDP endpoint ready")
@@ -141,6 +155,15 @@ Examples:
 	c.Flags().BoolVar(&waitReady, "wait-ready", true, "wait until the CDP endpoint accepts TCP connections before returning")
 	c.Flags().DurationVar(&readyTO, "wait-timeout", 15*time.Second, "timeout for --wait-ready")
 	return c
+}
+
+// stopStartedProcess kills and reaps a detached Chrome that launch will not leave running.
+func stopStartedProcess(cmd *exec.Cmd) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	_ = cmd.Process.Kill()
+	_ = cmd.Wait()
 }
 
 func buildChromeArgs(profileDir, bindAddr string, port int, headless bool, extra []string, startURL string) []string {
@@ -177,7 +200,7 @@ func waitForCDP(ctx context.Context, host string, port int, timeout time.Duratio
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return context.Cause(ctx)
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
