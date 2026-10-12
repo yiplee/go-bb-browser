@@ -22,18 +22,36 @@ type NetworkRouteRule struct {
 	Status      int    // HTTP status for mock (default 200)
 }
 
+// routeCDP is the worker's CDP entry. Tests replace it; the listen callback must not call it.
+var routeCDP = runCDP
+
+// listenTarget is chromedp.ListenTarget. Tests replace it to count listeners.
+var listenTarget = chromedp.ListenTarget
+
 type routeState struct {
-	mu sync.Mutex
+	mu    sync.Mutex
+	cdpMu sync.Mutex
 
-	rules map[target.ID][]NetworkRouteRule
+	rules   map[target.ID][]NetworkRouteRule
+	workers map[target.ID]*routeWorker
+	gen     map[target.ID]uint64
+}
 
-	listenerRegistered map[target.ID]struct{}
+type routeWorker struct {
+	cancel context.CancelFunc
+	wake   chan struct{}
+
+	mu           sync.Mutex
+	queue        []*fetch.EventRequestPaused
+	listening    bool
+	listenCancel context.CancelFunc
 }
 
 func newRouteState() *routeState {
 	return &routeState{
-		rules:              make(map[target.ID][]NetworkRouteRule),
-		listenerRegistered: make(map[target.ID]struct{}),
+		rules:   make(map[target.ID][]NetworkRouteRule),
+		workers: make(map[target.ID]*routeWorker),
+		gen:     make(map[target.ID]uint64),
 	}
 }
 
@@ -55,15 +73,15 @@ func (s *Session) SetNetworkRoutesContext(ctx context.Context, tabID target.ID, 
 	}
 	rs := s.routeStateLocked()
 	rs.mu.Lock()
-	defer rs.mu.Unlock()
 	if len(rules) == 0 {
 		delete(rs.rules, tabID)
-		return s.syncFetchEnableLocked(ctx, rs, tabID)
+	} else {
+		cp := make([]NetworkRouteRule, len(rules))
+		copy(cp, rules)
+		rs.rules[tabID] = cp
 	}
-	cp := make([]NetworkRouteRule, len(rules))
-	copy(cp, rules)
-	rs.rules[tabID] = cp
-	return s.syncFetchEnableLocked(ctx, rs, tabID)
+	rs.mu.Unlock()
+	return s.syncRoutes(ctx, rs, tabID)
 }
 
 // AppendNetworkRoute adds one rule for a tab (existing rules preserved).
@@ -77,9 +95,9 @@ func (s *Session) AppendNetworkRouteContext(ctx context.Context, tabID target.ID
 	}
 	rs := s.routeStateLocked()
 	rs.mu.Lock()
-	defer rs.mu.Unlock()
 	rs.rules[tabID] = append(rs.rules[tabID], rule)
-	return s.syncFetchEnableLocked(ctx, rs, tabID)
+	rs.mu.Unlock()
+	return s.syncRoutes(ctx, rs, tabID)
 }
 
 // RemoveNetworkRoutes removes rules whose URLPattern matches pattern; empty pattern clears all rules for the tab.
@@ -93,25 +111,25 @@ func (s *Session) RemoveNetworkRoutesContext(ctx context.Context, tabID target.I
 	}
 	rs := s.routeStateLocked()
 	rs.mu.Lock()
-	defer rs.mu.Unlock()
 	pat := strings.TrimSpace(urlPattern)
 	if pat == "" {
 		delete(rs.rules, tabID)
-		return s.syncFetchEnableLocked(ctx, rs, tabID)
-	}
-	cur := rs.rules[tabID]
-	var out []NetworkRouteRule
-	for _, r := range cur {
-		if r.URLPattern != pat {
-			out = append(out, r)
+	} else {
+		cur := rs.rules[tabID]
+		var out []NetworkRouteRule
+		for _, r := range cur {
+			if r.URLPattern != pat {
+				out = append(out, r)
+			}
+		}
+		if len(out) == 0 {
+			delete(rs.rules, tabID)
+		} else {
+			rs.rules[tabID] = out
 		}
 	}
-	if len(out) == 0 {
-		delete(rs.rules, tabID)
-	} else {
-		rs.rules[tabID] = out
-	}
-	return s.syncFetchEnableLocked(ctx, rs, tabID)
+	rs.mu.Unlock()
+	return s.syncRoutes(ctx, rs, tabID)
 }
 
 // NetworkRouteCount returns how many interception rules are active for a tab.
@@ -124,77 +142,39 @@ func (s *Session) NetworkRouteCount(tabID target.ID) int {
 	return len(s.routeState.rules[tabID])
 }
 
-func (s *Session) syncFetchEnableLocked(ctx context.Context, rs *routeState, tabID target.ID) error {
+func (s *Session) syncRoutes(ctx context.Context, rs *routeState, tabID target.ID) error {
 	tabCtx, err := s.tabChromeCtxContext(ctx, tabID)
 	if err != nil {
 		return err
 	}
-	rules := rs.rules[tabID]
+	rs.cdpMu.Lock()
+	defer rs.cdpMu.Unlock()
+
+	rules, gen := rs.snapshot(tabID)
 	if len(rules) == 0 {
-		delete(rs.listenerRegistered, tabID)
-		return runCDPWithContext(tabCtx, ctx, chromedp.ActionFunc(func(c context.Context) error {
+		err := runCDPWithContext(tabCtx, ctx, chromedp.ActionFunc(func(c context.Context) error {
 			return fetch.Disable().Do(c)
 		}))
+		if w := rs.worker(tabID); w != nil {
+			w.stopListening()
+		}
+		return err
 	}
 
-	if _, ok := rs.listenerRegistered[tabID]; !ok {
-		rs.listenerRegistered[tabID] = struct{}{}
-		chromedp.ListenTarget(tabCtx, func(ev interface{}) {
-			e, ok := ev.(*fetch.EventRequestPaused)
-			if !ok || e == nil || e.Request == nil {
-				return
-			}
-			if e.ResponseStatusCode != 0 || e.ResponseErrorReason != "" {
-				_ = runCDP(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-					return fetch.ContinueRequest(e.RequestID).Do(ctx)
-				}))
-				return
-			}
-			reqURL := e.Request.URL
-
-			rs.mu.Lock()
-			curRules := rs.rules[tabID]
-			rs.mu.Unlock()
-
-			var matched *NetworkRouteRule
-			for i := range curRules {
-				if urlMatch(curRules[i].URLPattern, reqURL) {
-					matched = &curRules[i]
-					break
-				}
-			}
-			if matched == nil {
-				_ = runCDP(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-					return fetch.ContinueRequest(e.RequestID).Do(ctx)
-				}))
-				return
-			}
-			if matched.Abort {
-				_ = runCDP(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-					return fetch.FailRequest(e.RequestID, network.ErrorReasonBlockedByClient).Do(ctx)
-				}))
-				return
-			}
-			body := matched.MockBody
-			ct := strings.TrimSpace(matched.ContentType)
-			if ct == "" {
-				ct = "application/json"
-			}
-			st := matched.Status
-			if st <= 0 {
-				st = 200
-			}
-			b64 := base64.StdEncoding.EncodeToString([]byte(body))
-			headers := []*fetch.HeaderEntry{{Name: "Content-Type", Value: ct}}
-			_ = runCDP(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-				return fetch.FulfillRequest(e.RequestID, int64(st)).
-					WithResponseHeaders(headers).
-					WithBody(b64).
-					Do(ctx)
-			}))
-		})
+	w := rs.ensureWorker(tabID, tabCtx, gen)
+	if w == nil || !w.startListening(tabCtx, rs, tabID, gen) {
+		return nil
 	}
+	patterns := routePatterns(rules)
+	if len(patterns) == 0 {
+		return nil
+	}
+	return runCDPWithContext(tabCtx, ctx, chromedp.ActionFunc(func(c context.Context) error {
+		return fetch.Enable().WithPatterns(patterns).Do(c)
+	}))
+}
 
+func routePatterns(rules []NetworkRouteRule) []*fetch.RequestPattern {
 	patterns := make([]*fetch.RequestPattern, 0, len(rules))
 	for _, r := range rules {
 		p := strings.TrimSpace(r.URLPattern)
@@ -203,12 +183,201 @@ func (s *Session) syncFetchEnableLocked(ctx context.Context, rs *routeState, tab
 		}
 		patterns = append(patterns, &fetch.RequestPattern{URLPattern: p, RequestStage: fetch.RequestStageRequest})
 	}
-	if len(patterns) == 0 {
+	return patterns
+}
+
+func (rs *routeState) snapshot(tabID target.ID) ([]NetworkRouteRule, uint64) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	var out []NetworkRouteRule
+	if src := rs.rules[tabID]; len(src) > 0 {
+		out = make([]NetworkRouteRule, len(src))
+		copy(out, src)
+	}
+	return out, rs.gen[tabID]
+}
+
+func (rs *routeState) generation(tabID target.ID) uint64 {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	return rs.gen[tabID]
+}
+
+func (rs *routeState) worker(tabID target.ID) *routeWorker {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	return rs.workers[tabID]
+}
+
+func (rs *routeState) ensureWorker(tabID target.ID, tabCtx context.Context, gen uint64) *routeWorker {
+	rs.mu.Lock()
+	if rs.gen[tabID] != gen || len(rs.rules[tabID]) == 0 {
+		rs.mu.Unlock()
 		return nil
 	}
-	return runCDPWithContext(tabCtx, ctx, chromedp.ActionFunc(func(c context.Context) error {
-		return fetch.Enable().WithPatterns(patterns).Do(c)
+	w := rs.workers[tabID]
+	if w != nil {
+		rs.mu.Unlock()
+		return w
+	}
+	ctx, cancel := context.WithCancel(tabCtx)
+	w = &routeWorker{
+		cancel: cancel,
+		wake:   make(chan struct{}, 1),
+	}
+	if rs.workers == nil {
+		rs.workers = make(map[target.ID]*routeWorker)
+	}
+	rs.workers[tabID] = w
+	rs.mu.Unlock()
+	go w.loop(ctx, rs, tabID, tabCtx)
+	return w
+}
+
+func (w *routeWorker) startListening(tabCtx context.Context, rs *routeState, tabID target.ID, gen uint64) bool {
+	live := func() bool { return rs.generation(tabID) == gen }
+	if !live() {
+		return false
+	}
+	w.mu.Lock()
+	if w.listening {
+		w.mu.Unlock()
+		if live() {
+			return true
+		}
+		w.stopListening()
+		return false
+	}
+	ctx, cancel := context.WithCancel(tabCtx)
+	w.listenCancel = cancel
+	w.listening = true
+	w.mu.Unlock()
+	if !live() {
+		w.stopListening()
+		return false
+	}
+	listenTarget(ctx, w.onPaused)
+	if !live() {
+		w.stopListening()
+		return false
+	}
+	return true
+}
+
+func (w *routeWorker) stopListening() {
+	w.mu.Lock()
+	cancel := w.listenCancel
+	w.listenCancel = nil
+	w.listening = false
+	w.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (w *routeWorker) onPaused(ev any) {
+	e, ok := ev.(*fetch.EventRequestPaused)
+	if !ok || e == nil || e.Request == nil {
+		return
+	}
+	w.mu.Lock()
+	w.queue = append(w.queue, e)
+	w.mu.Unlock()
+	select {
+	case w.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (w *routeWorker) pop() *fetch.EventRequestPaused {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.queue) == 0 {
+		return nil
+	}
+	ev := w.queue[0]
+	w.queue[0] = nil
+	w.queue = w.queue[1:]
+	if len(w.queue) == 0 {
+		w.queue = nil
+	}
+	return ev
+}
+
+func (w *routeWorker) loop(ctx context.Context, rs *routeState, tabID target.ID, tabCtx context.Context) {
+	defer w.stopListening()
+	for {
+		w.dispatchAll(rs, tabID, tabCtx)
+		select {
+		case <-ctx.Done():
+			w.dispatchAll(rs, tabID, tabCtx)
+			return
+		case <-w.wake:
+		}
+	}
+}
+
+func (w *routeWorker) dispatchAll(rs *routeState, tabID target.ID, tabCtx context.Context) {
+	for {
+		ev := w.pop()
+		if ev == nil {
+			return
+		}
+		rules, _ := rs.snapshot(tabID)
+		applyPaused(tabCtx, rules, ev)
+	}
+}
+
+func applyPaused(tabCtx context.Context, rules []NetworkRouteRule, e *fetch.EventRequestPaused) {
+	if e == nil || e.Request == nil {
+		return
+	}
+	if e.ResponseStatusCode != 0 || e.ResponseErrorReason != "" {
+		continuePaused(tabCtx, e.RequestID)
+		return
+	}
+	matched, ok := matchRoute(rules, e.Request.URL)
+	if !ok {
+		continuePaused(tabCtx, e.RequestID)
+		return
+	}
+	if matched.Abort {
+		_ = routeCDP(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+			return fetch.FailRequest(e.RequestID, network.ErrorReasonBlockedByClient).Do(ctx)
+		}))
+		return
+	}
+	ct := strings.TrimSpace(matched.ContentType)
+	if ct == "" {
+		ct = "application/json"
+	}
+	st := matched.Status
+	if st <= 0 {
+		st = 200
+	}
+	b64 := base64.StdEncoding.EncodeToString([]byte(matched.MockBody))
+	headers := []*fetch.HeaderEntry{{Name: "Content-Type", Value: ct}}
+	_ = routeCDP(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		return fetch.FulfillRequest(e.RequestID, int64(st)).
+			WithResponseHeaders(headers).
+			WithBody(b64).
+			Do(ctx)
 	}))
+}
+
+func continuePaused(tabCtx context.Context, id fetch.RequestID) {
+	_ = routeCDP(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		return fetch.ContinueRequest(id).Do(ctx)
+	}))
+}
+
+func matchRoute(rules []NetworkRouteRule, reqURL string) (NetworkRouteRule, bool) {
+	for i := range rules {
+		if urlMatch(rules[i].URLPattern, reqURL) {
+			return rules[i], true
+		}
+	}
+	return NetworkRouteRule{}, false
 }
 
 func urlMatch(pattern, reqURL string) bool {
@@ -273,7 +442,16 @@ func (s *Session) ClearRoutesForTarget(tabID target.ID) {
 	}
 	rs := s.routeState
 	rs.mu.Lock()
-	defer rs.mu.Unlock()
 	delete(rs.rules, tabID)
-	delete(rs.listenerRegistered, tabID)
+	if rs.gen == nil {
+		rs.gen = make(map[target.ID]uint64)
+	}
+	rs.gen[tabID]++
+	w := rs.workers[tabID]
+	delete(rs.workers, tabID)
+	rs.mu.Unlock()
+	if w != nil {
+		w.stopListening()
+		w.cancel()
+	}
 }
