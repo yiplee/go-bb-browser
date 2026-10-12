@@ -61,6 +61,44 @@ func TestCLIHelpDoesNotExposeAPIToken(t *testing.T) {
 	}
 }
 
+func TestTabListExitCode(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		exit int
+	}{
+		{name: "valid result", body: `{"jsonrpc":"2.0","id":1,"result":{"seq":1,"tabs":[]}}`, exit: 0},
+		{name: "error null", body: `{"jsonrpc":"2.0","id":1,"result":{"seq":1},"error":null}`, exit: 0},
+		{name: "empty body", body: "", exit: 1},
+		{name: "non-json", body: "not-json", exit: 1},
+		{name: "json-rpc error", body: `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"nope"}}`, exit: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/v1" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			root := newRootCmd()
+			root.SetArgs([]string{"--url", srv.URL, "tab", "list"})
+			root.SilenceErrors = true
+			root.SilenceUsage = true
+			err := root.Execute()
+			exit := 0
+			if err != nil {
+				exit = 1
+			}
+			if exit != tc.exit {
+				t.Fatalf("exit %d, want %d: %v", exit, tc.exit, err)
+			}
+		})
+	}
+}
+
 func TestFormatObsLine(t *testing.T) {
 	for _, tc := range []struct {
 		name string

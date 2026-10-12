@@ -43,6 +43,8 @@ type observationStatsConn interface {
 	ObservationStats(target.ID, browser.ObservationKind) browser.ObservationStats
 }
 
+var _ observationStatsConn = (*browser.Session)(nil)
+
 type pageTargetsContextConn interface {
 	PageTargetsContext(context.Context) ([]*target.Info, error)
 }

@@ -1240,18 +1240,12 @@ func cmdRPC(ctx context.Context, base string, jsonOut bool, method string, param
 	var env struct {
 		Result json.RawMessage `json:"result"`
 	}
-	if err := json.Unmarshal(b, &env); err != nil {
-		fmt.Println(string(b))
-		return fmt.Errorf("decode response: %w", err)
-	}
+	_ = json.Unmarshal(b, &env)
 	if len(env.Result) > 0 {
 		var pretty bytes.Buffer
-		if err := json.Indent(&pretty, env.Result, "", "  "); err != nil {
-			fmt.Println(string(env.Result))
-		} else {
-			_, _ = pretty.WriteTo(os.Stdout)
-			fmt.Println()
-		}
+		_ = json.Indent(&pretty, env.Result, "", "  ")
+		_, _ = pretty.WriteTo(os.Stdout)
+		fmt.Println()
 	}
 	return nil
 }
