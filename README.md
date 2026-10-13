@@ -216,6 +216,7 @@ Daemon 已实现但 **CLI 未封装** 的 JSON-RPC 方法：`tab_focus`（返回
 ### `open URL`
 
 - **作用**：新 tab 打开 URL（`tab_new`）；`--current` 时在焦点 tab 上 `goto`。
+- **URL**：`open`、`open --current` 和 `tab new` 会为无 scheme 的网址自动补 `https://`，包括 `localhost:8080`、`127.0.0.1:9222` 和 `[::1]:8080`；已有 scheme（如 `http://`、`about:blank`、`file:`、`chrome:`、`data:`）保持原样。空串、含空白或无 host 的 HTTP(S) URL 等非法输入会在发送 RPC 前报错并以非 0 退出。
 - **选项**：`--current`、`--wait N`（新开 tab 后睡眠秒数，便于慢页面）。
 
 ---

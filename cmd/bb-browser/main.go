@@ -114,7 +114,10 @@ func newOpenCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, cancel := context.WithTimeout(cmd.Context(), 120*time.Second)
 			defer cancel()
-			rawURL := strings.TrimSpace(args[0])
+			rawURL, err := normalizeURL(args[0])
+			if err != nil {
+				return err
+			}
 			if current {
 				tab, err := effectiveTab(ctx, baseURL, tabFlag)
 				if err != nil {
@@ -182,12 +185,17 @@ func newTabCmd() *cobra.Command {
 	tabNew := &cobra.Command{
 		Use:   "new [url]",
 		Short: "JSON-RPC tab_new",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, cancel := context.WithTimeout(cmd.Context(), 60*time.Second)
 			defer cancel()
 			u := "about:blank"
 			if len(args) > 0 {
-				u = strings.TrimSpace(args[0])
+				u = args[0]
+			}
+			u, err := normalizeURL(u)
+			if err != nil {
+				return err
 			}
 			params := map[string]any{"url": u}
 			if tabNewSilent {
