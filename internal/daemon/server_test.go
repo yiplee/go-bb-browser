@@ -11,8 +11,17 @@ import (
 	"time"
 
 	"github.com/chromedp/cdproto/target"
+	"github.com/yiplee/go-bb-browser/internal/timeout"
 	"github.com/yiplee/go-bb-browser/pkg/protocol"
 )
+
+func TestHTTPServerWriteTimeoutBudget(t *testing.T) {
+	srv := newHTTPServer(http.NotFoundHandler())
+	minimum := srv.ReadTimeout + timeout.Operation + 15*time.Second
+	if srv.WriteTimeout < minimum {
+		t.Fatalf("WriteTimeout = %v, want at least %v (ReadTimeout + Operation + 15s flush margin)", srv.WriteTimeout, minimum)
+	}
+}
 
 func TestHealthGet(t *testing.T) {
 	cfg := Config{
