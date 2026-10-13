@@ -49,6 +49,13 @@ Examples:
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			startURL = strings.TrimSpace(startURL)
+			if startURL != "" {
+				var err error
+				startURL, err = normalizeURL(startURL)
+				if err != nil {
+					return err
+				}
+			}
 
 			binary := strings.TrimSpace(chromePath)
 			if binary == "" {
