@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -19,7 +20,7 @@ import (
 
 func TestMain(m *testing.M) {
 	switch os.Getenv("BB_BROWSER_LAUNCH_HELPER") {
-	case "sleep", "listen", "hold":
+	case "sleep", "listen", "hold", "args":
 		runLaunchHelper(os.Getenv("BB_BROWSER_LAUNCH_HELPER"))
 		os.Exit(0)
 	default:
@@ -28,6 +29,17 @@ func TestMain(m *testing.M) {
 }
 
 func runLaunchHelper(mode string) {
+	if mode == "args" {
+		args, err := json.Marshal(os.Args[1:])
+		if err == nil {
+			err = os.WriteFile(os.Getenv("BB_BROWSER_LAUNCH_ARGSFILE"), args, 0o600)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		return
+	}
 	if mode == "hold" {
 		// Stay up across SIGINT so the foreground test can see a context-cancel SIGKILL.
 		signal.Ignore(os.Interrupt, syscall.SIGTERM)
@@ -63,6 +75,58 @@ func runLaunchHelper(mode string) {
 		}()
 	}
 	time.Sleep(30 * time.Second)
+}
+
+func TestLaunchNormalizesStartURL(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input []string
+		want  string
+	}{
+		{"bare host", []string{"--start-url", " \tgoogle.com\n "}, "https://google.com"},
+		{"userinfo", []string{"--start-url", "user:pass@[::1]:8080/path"}, "https://user:pass@[::1]:8080/path"},
+		{"explicit scheme", []string{"--start-url", "my.scheme://example.com/path"}, "my.scheme://example.com/path"},
+		{"default", nil, "about:blank"},
+		{"empty", []string{"--start-url", ""}, ""},
+		{"whitespace", []string{"--start-url", " \t\n "}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			argsfile := filepath.Join(dir, "args.json")
+			t.Setenv("BB_BROWSER_LAUNCH_HELPER", "args")
+			t.Setenv("BB_BROWSER_LAUNCH_ARGSFILE", argsfile)
+			bin, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd := newLaunchCmd()
+			cmd.SetArgs(append([]string{"--chrome", bin, "--profile", filepath.Join(dir, "profile"), "--detach=false", "--wait-ready=false"}, tc.input...))
+			if err := withDiscardedStdio(cmd.Execute); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(argsfile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var args []string
+			if err := json.Unmarshal(data, &args); err != nil {
+				t.Fatal(err)
+			}
+			var urls []string
+			for _, arg := range args {
+				if !strings.HasPrefix(arg, "--") {
+					urls = append(urls, arg)
+				}
+			}
+			if tc.want == "" {
+				if len(urls) != 0 {
+					t.Fatalf("Chrome URLs = %q; want none", urls)
+				}
+			} else if len(urls) != 1 || urls[0] != tc.want {
+				t.Fatalf("Chrome URLs = %q; want %q", urls, tc.want)
+			}
+		})
+	}
 }
 
 func TestLaunchWaitTimeoutStopsProcess(t *testing.T) {

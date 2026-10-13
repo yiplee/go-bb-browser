@@ -380,11 +380,14 @@ func newFetchCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, cancel := context.WithTimeout(cmd.Context(), 120*time.Second)
 			defer cancel()
+			rawURL, err := normalizeURL(args[0])
+			if err != nil {
+				return err
+			}
 			tab, err := effectiveTab(ctx, baseURL, tabFlag)
 			if err != nil {
 				return err
 			}
-			rawURL := strings.TrimSpace(args[0])
 			params := map[string]any{
 				"tab": tab,
 				"url": rawURL,
@@ -668,11 +671,15 @@ func newGotoCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, cancel := context.WithTimeout(cmd.Context(), 120*time.Second)
 			defer cancel()
+			rawURL, err := normalizeURL(args[0])
+			if err != nil {
+				return err
+			}
 			tab, err := effectiveTab(ctx, baseURL, tabFlag)
 			if err != nil {
 				return err
 			}
-			return cmdRPC(ctx, baseURL, jsonOut, protocol.MethodGoto, map[string]any{"tab": tab, "url": args[0]})
+			return cmdRPC(ctx, baseURL, jsonOut, protocol.MethodGoto, map[string]any{"tab": tab, "url": rawURL})
 		},
 	}
 }
