@@ -15,6 +15,7 @@ import (
 
 	"github.com/yiplee/go-bb-browser/internal/state"
 	"github.com/yiplee/go-bb-browser/internal/store"
+	"github.com/yiplee/go-bb-browser/internal/timeout"
 	"github.com/yiplee/go-bb-browser/pkg/protocol"
 )
 
@@ -206,11 +207,14 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		return fmt.Errorf("listen: %w", err)
 	}
 
+	// net/http arms WriteTimeout when the header read returns, before the
+	// handler reads the body and before handleV1 starts timeout.Operation.
+	// The margin lets a near-budget CDP call still flush a JSON-RPC body.
 	srv := &http.Server{
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      60 * time.Second,
+		WriteTimeout:      timeout.Operation + 15*time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
 
