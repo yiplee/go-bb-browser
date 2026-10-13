@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -292,7 +293,7 @@ func TestScheduleAuditAfterCloseDoesNotPanic(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := srv.closeAudit(); err != nil {
+		if err := srv.store.Close(); err != nil {
 			t.Error(err)
 		}
 	})
@@ -339,10 +340,15 @@ func TestShutdownWaitsForHandlerBeforeClosingAudit(t *testing.T) {
 	srv.SkipBrowserAttach = true
 	srv.shutdownTimeout = 40 * time.Millisecond
 	release := make(chan struct{})
+	releaseHandler := sync.OnceFunc(func() { close(release) })
+	defer releaseHandler()
 	entered := make(chan struct{})
-	srv.tabHook = &blockingTargets{fakeConn: &fakeConn{}, entered: entered, release: release}
+	srv.tabLive = &blockingTargets{fakeConn: &fakeConn{}, entered: entered, release: release}
+	sessionClosed := make(chan struct{})
+	srv.sessDone = func() { close(sessionClosed) }
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	done := make(chan error, 1)
 	go func() {
 		done <- srv.ListenAndServe(ctx)
@@ -382,15 +388,25 @@ func TestShutdownWaitsForHandlerBeforeClosingAudit(t *testing.T) {
 		t.Fatalf("shutdown returned while handler still in CDP: %v", err)
 	default:
 	}
-	close(release)
+	select {
+	case <-sessionClosed:
+		t.Fatal("session closed while handler still in CDP")
+	default:
+	}
+	releaseHandler()
 
 	select {
 	case err := <-done:
-		if err != nil && !strings.Contains(err.Error(), "http shutdown") {
+		if err != nil {
 			t.Fatal(err)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("shutdown timed out waiting for handler")
+	}
+	select {
+	case <-sessionClosed:
+	default:
+		t.Fatal("session not closed after handler drained")
 	}
 	if err := <-clientErr; err != nil {
 		t.Fatal(err)

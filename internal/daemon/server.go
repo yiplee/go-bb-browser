@@ -15,6 +15,7 @@ import (
 
 	"github.com/yiplee/go-bb-browser/internal/state"
 	"github.com/yiplee/go-bb-browser/internal/store"
+	"github.com/yiplee/go-bb-browser/internal/timeout"
 	"github.com/yiplee/go-bb-browser/pkg/protocol"
 )
 
@@ -51,7 +52,7 @@ type Server struct {
 	auditWG     sync.WaitGroup
 
 	// shutdownTimeout bounds http.Server.Shutdown. Zero uses the default.
-	// Handlers still running after the budget are waited out before auditCh is closed.
+	// A timed-out shutdown gets one more timeout.Operation to drain handlers.
 	shutdownTimeout time.Duration
 
 	// CDP loss triggers fatal exit (supervisor restart) instead of in-process reconnect.
@@ -181,12 +182,16 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	s.stopRun = stopRun
 	s.fatalCh = make(chan error, 1)
 
-	// Shutdown does not cancel handlers still inside a CDP call. Wait for them
-	// before closing auditCh so scheduleAudit cannot send on a closed channel.
-	gate := newHandlerGate()
+	defer func() { _ = s.closeAudit() }()
+	// shutdownHTTP drains handlers before the session and audit store are closed.
 	defer func() {
-		gate.wait()
-		_ = s.closeAudit()
+		s.tabMu.Lock()
+		if s.sessDone != nil {
+			s.sessDone()
+		}
+		s.tabLive = nil
+		s.sessDone = nil
+		s.tabMu.Unlock()
 	}()
 
 	if !s.SkipBrowserAttach && s.tabHook == nil {
@@ -196,15 +201,6 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 			return fmt.Errorf("cdp attach: %w", err)
 		}
 		s.tabMu.Unlock()
-		defer func() {
-			s.tabMu.Lock()
-			if s.sessDone != nil {
-				s.sessDone()
-			}
-			s.tabLive = nil
-			s.sessDone = nil
-			s.tabMu.Unlock()
-		}()
 	}
 
 	ln, err := net.Listen("tcp", s.cfg.ListenAddr)
@@ -213,11 +209,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	}
 
 	srv := &http.Server{
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			gate.enter()
-			defer gate.leave()
-			s.Handler().ServeHTTP(w, r)
-		}),
+		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,
@@ -264,8 +256,18 @@ func (s *Server) shutdownHTTP(srv *http.Server) error {
 		budget = 15 * time.Second
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), budget)
+	err := srv.Shutdown(shutdownCtx)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	shutdownCtx, cancel = context.WithTimeout(context.Background(), timeout.Operation)
 	defer cancel()
-	return srv.Shutdown(shutdownCtx)
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		_ = srv.Close()
+		return err
+	}
+	return nil
 }
 
 // closeAudit rejects further channel sends, drains the writer, and closes the store.
@@ -281,47 +283,10 @@ func (s *Server) closeAudit() error {
 	}
 	s.auditMu.Unlock()
 	<-s.auditDone
-	s.auditWG.Wait()
 	s.auditMu.Lock()
 	err := s.store.Close()
 	s.auditMu.Unlock()
 	return err
-}
-
-// handlerGate counts handlers inside ServeHTTP so auditCh is closed only after they return.
-type handlerGate struct {
-	mu sync.Mutex
-	n  int
-	cv *sync.Cond
-}
-
-func newHandlerGate() *handlerGate {
-	g := &handlerGate{}
-	g.cv = sync.NewCond(&g.mu)
-	return g
-}
-
-func (g *handlerGate) enter() {
-	g.mu.Lock()
-	g.n++
-	g.mu.Unlock()
-}
-
-func (g *handlerGate) leave() {
-	g.mu.Lock()
-	g.n--
-	if g.n == 0 {
-		g.cv.Broadcast()
-	}
-	g.mu.Unlock()
-}
-
-func (g *handlerGate) wait() {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	for g.n > 0 {
-		g.cv.Wait()
-	}
 }
 
 func (s *Server) runAuditWriter() {
