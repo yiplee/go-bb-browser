@@ -116,17 +116,20 @@ func (s *Session) initializeObserver(o *tabObserver) {
 	// request timeout child. Cancelling the latter would otherwise kill the session.
 	err := chromedp.Run(o.ctx)
 	if err != nil {
+		s.obsMu.Lock()
 		o.initErr = wrapCDPError("Target.attachObserver", o.tid, err)
+		release := s.observers[o.tid] == o
+		if release {
+			delete(s.observers, o.tid) // retry with a fresh context on the next call
+		}
+		s.obsMu.Unlock()
 		if o.logger != nil {
 			o.logger.Debug("observer target initialization ended", "target", o.tid, "err", o.initErr)
 		}
-		// Drop so the next call retries. Do not cancel: that runs Target.CloseTarget.
-		s.obsMu.Lock()
-		if s.observers[o.tid] == o {
-			delete(s.observers, o.tid)
-		}
-		s.obsMu.Unlock()
 		close(o.ready)
+		if release {
+			releaseFailedAttach(o.ctx, o.cancel, browserExecutor(o.ctx))
+		}
 		return
 	}
 	go o.runWriter()

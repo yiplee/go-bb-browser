@@ -33,6 +33,25 @@ func browserExecutor(ctx context.Context) cdp.Executor {
 	return c.Browser
 }
 
+// releaseFailedAttach releases a child context without closing the user's tab.
+// The caller must own cleanup exclusively: once an entry has been removed by
+// ForgetTarget or CloseTarget, their cancel watcher may already be using Target.
+func releaseFailedAttach(ctx context.Context, cancel context.CancelFunc, ex cdp.Executor) {
+	c := chromedp.FromContext(ctx)
+	if c != nil && c.Target != nil {
+		if id := c.Target.SessionID; id != "" && ex != nil {
+			// Detach even if the attach context has expired. Cleanup is bounded,
+			// and cancellation must still proceed if the browser is unreachable.
+			cleanupCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+			_ = target.DetachFromTarget().WithSessionID(id).Do(cdp.WithExecutor(cleanupCtx, ex))
+			stop()
+		}
+		// chromedp's cancel watcher otherwise detaches AND closes this target.
+		c.Target = nil
+	}
+	cancel()
+}
+
 // Session wraps a chromedp remote allocator + browser context for tab-scoped CDP APIs.
 // Only NewRemoteAllocator is used — the daemon never launches Chrome (see IMPLEMENTATION_PLAN §5.1).
 type Session struct {
@@ -555,19 +574,19 @@ func (s *Session) tabChromeCtxContext(requestCtx context.Context, tabID target.I
 func (s *Session) initializeTabPoolEntry(tabID target.ID, ent *tabPoolEntry) {
 	err := chromedp.Run(ent.ctx)
 	s.poolMu.Lock()
-	defer s.poolMu.Unlock()
+	release := false
 	if s.tabPool[tabID] != ent {
 		ent.err = &CDPError{Kind: ErrorTargetGone, Op: "Target.attachToTarget", Target: tabID, Err: fmt.Errorf("target removed while attaching")}
-		close(ent.ready)
-		return
-	}
-	if err != nil {
-		delete(s.tabPool, tabID) // retry next time; cancel would CloseTarget
+	} else if err != nil {
+		delete(s.tabPool, tabID) // the next call can retry with a fresh context
 		ent.err = wrapCDPError("Target.attachToTarget", tabID, err)
-		close(ent.ready)
-		return
+		release = true
 	}
+	s.poolMu.Unlock()
 	close(ent.ready)
+	if release {
+		releaseFailedAttach(ent.ctx, ent.cancel, browserExecutor(ent.ctx))
+	}
 }
 
 // CreatePageTarget opens a new page target (INV-7: works when zero tabs exist).
