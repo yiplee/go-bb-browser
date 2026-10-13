@@ -562,6 +562,7 @@ func (s *Session) initializeTabPoolEntry(tabID target.ID, ent *tabPoolEntry) {
 		return
 	}
 	if err != nil {
+		delete(s.tabPool, tabID) // retry next time; cancel would CloseTarget
 		ent.err = wrapCDPError("Target.attachToTarget", tabID, err)
 		close(ent.ready)
 		return
