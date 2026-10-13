@@ -119,11 +119,22 @@ func newOpenCmd() *cobra.Command {
 				return err
 			}
 			if current {
+				if silent {
+					return errors.New("--current cannot be used with --silent")
+				}
 				tab, err := effectiveTab(ctx, baseURL, tabFlag)
 				if err != nil {
 					return err
 				}
-				if err := cmdRPC(ctx, baseURL, jsonOut, protocol.MethodGoto, map[string]any{"tab": tab, "url": rawURL}); err != nil {
+				b, err := postRPC(ctx, baseURL, protocol.MethodGoto, map[string]any{"tab": tab, "url": rawURL})
+				if err != nil {
+					return err
+				}
+				if jsonOut {
+					fmt.Println(string(b))
+					return rpcEnvelopeError(b)
+				}
+				if err := rpcEnvelopeError(b); err != nil {
 					return err
 				}
 				fmt.Println(tab)
