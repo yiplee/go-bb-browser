@@ -10,9 +10,11 @@ import (
 	"unicode"
 )
 
-// normalizeURL adds HTTPS to bare addresses and validates them before any RPC
-// can create a tab. Explicit schemes and the original URL spelling are retained.
+// normalizeURL trims surrounding whitespace, adds HTTPS to bare addresses, and
+// validates them before any RPC can create a tab. Explicit schemes and the
+// remaining URL spelling are retained.
 func normalizeURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", fmt.Errorf("invalid URL: empty input")
 	}

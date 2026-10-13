@@ -17,6 +17,13 @@ var validURLs = []struct {
 	want  string
 }{
 	{"google.com", "https://google.com"},
+	{" google.com", "https://google.com"},
+	{"google.com ", "https://google.com"},
+	{" google.com ", "https://google.com"},
+	{"\tgoogle.com\t", "https://google.com"},
+	{"\ngoogle.com\n", "https://google.com"},
+	{" \t\r\ngoogle.com\r\n\t ", "https://google.com"},
+	{" \tHTTPS://Example.com/a%20b?q=1#section\n ", "HTTPS://Example.com/a%20b?q=1#section"},
 	{"example.com/path?q=1", "https://example.com/path?q=1"},
 	{"example.com:8443/path?q=1#section", "https://example.com:8443/path?q=1#section"},
 	{"localhost", "https://localhost"},
@@ -50,7 +57,7 @@ var validURLs = []struct {
 }
 
 var invalidURLs = []string{
-	"", " ", " google.com", "google.com ", "google .com",
+	"", " ", "\t", "\n", " \t\r\n ", "google .com", " google .com ",
 	"example.com/a b", "example.com/?q=a b", "example.com/\tpath",
 	"example.com/\npath", "example.com/\x00path", "example.com/\u00a0path",
 	"/path", "?q=1", "#section", ":8080", "https://", "http:///path",
