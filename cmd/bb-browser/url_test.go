@@ -44,6 +44,9 @@ var validURLs = []struct {
 	{"user@example.com", "https://user@example.com"},
 	{"user@example.com:8080", "https://user@example.com:8080"},
 	{"user:pass@example.com", "https://user:pass@example.com"},
+	{"user:p:a:ss@example.com", "https://user:p:a:ss@example.com"},
+	{"user:p%40ss@example.com", "https://user:p%40ss@example.com"},
+	{"user:pass@sub-domain.example.com.", "https://user:pass@sub-domain.example.com."},
 	{"user:pass@example.com:8080", "https://user:pass@example.com:8080"},
 	{"user:pass@example.com:8080/path?q=1#section", "https://user:pass@example.com:8080/path?q=1#section"},
 	{"user:pass@localhost", "https://user:pass@localhost"},
@@ -67,6 +70,21 @@ var validURLs = []struct {
 	{"data:text/plain,hello%20world", "data:text/plain,hello%20world"},
 	{"mailto:user@example.com", "mailto:user@example.com"},
 	{"tel:123456789", "tel:123456789"},
+	{"sip:alice@example.com", "sip:alice@example.com"},
+	{"sips:alice@example.com:5061", "sips:alice@example.com:5061"},
+	{"xmpp:user@jabber.org", "xmpp:user@jabber.org"},
+	{"sms:+123456789", "sms:+123456789"},
+	{"magnet:?xt=urn:btih:abcdef", "magnet:?xt=urn:btih:abcdef"},
+	{"MAGNET:?xt=urn:btih:abcdef", "MAGNET:?xt=urn:btih:abcdef"},
+	{"irc:alice@irc.example.com", "irc:alice@irc.example.com"},
+	{"ircs:alice@irc.example.com:6697", "ircs:alice@irc.example.com:6697"},
+	{"news:message@example.com", "news:message@example.com"},
+	{"nntp:message@news.example.com", "nntp:message@news.example.com"},
+	{"geo:37.786971,-122.399677", "geo:37.786971,-122.399677"},
+	{"webcal:calendar@example.com", "webcal:calendar@example.com"},
+	{"facetime:alice@example.com", "facetime:alice@example.com"},
+	{"skype:alice@example.com?call", "skype:alice@example.com?call"},
+	{"SIP:alice@example.com", "SIP:alice@example.com"},
 	{"javascript:alert(1)", "javascript:alert(1)"},
 	{"javascript:alert('fe80::1')", "javascript:alert('fe80::1')"},
 	{"data:text/plain,fe80::1", "data:text/plain,fe80::1"},
@@ -80,6 +98,15 @@ var validURLs = []struct {
 	{"fe80://[::1]/path", "fe80://[::1]/path"},
 	{"custom:resource.name/path", "custom:resource.name/path"},
 	{"custom:resource/path::part", "custom:resource/path::part"},
+	{"user:pass@myhost", "user:pass@myhost"},
+	{"custom:@example.com", "custom:@example.com"},
+	{"custom:resource@@example.com", "custom:resource@@example.com"},
+	{"custom:resource@not_a.hostname", "custom:resource@not_a.hostname"},
+	{"custom:resource@example..com", "custom:resource@example..com"},
+	{"custom:resource@-example.com", "custom:resource@-example.com"},
+	{"custom:resource@example-.com", "custom:resource@example-.com"},
+	{"custom:resource@not_a_host:8080", "custom:resource@not_a_host:8080"},
+	{"custom:res[ource]@example.com", "custom:res[ource]@example.com"},
 }
 
 var invalidURLs = []string{
@@ -88,7 +115,7 @@ var invalidURLs = []string{
 	"example.com/\npath", "example.com/\x00path", "example.com/\u00a0path",
 	"/path", "?q=1", "#section", ":8080", "https://", "http:///path",
 	"https://?q=1", "https://:443", "https:example.com", "http:8080",
-	"about:", "file:", "chrome:", "data:",
+	"about:", "file:", "chrome:", "data:", "magnet:", "magnet:?",
 	"localhost:bad", "example.com:bad", "https://example.com:bad",
 	"example.com:", "localhost:65536", "https://example.com:65536",
 	"https://example.com:", "[::1", "[not-an-ip]:8080", "[::1]:bad",
@@ -119,6 +146,27 @@ func TestNormalizeURL(t *testing.T) {
 				t.Fatalf("normalizeURL(%q) = %q, %v; want empty URL and error", input, got, err)
 			}
 		})
+	}
+}
+
+func TestNormalizeURLKnownOpaqueSchemes(t *testing.T) {
+	for _, scheme := range []string{
+		"sip", "sips", "xmpp", "tel", "sms", "mailto", "magnet", "irc", "ircs",
+		"news", "nntp", "geo", "webcal", "facetime", "skype",
+	} {
+		for _, spelling := range []string{scheme, strings.ToUpper(scheme)} {
+			// Known schemes must win even when their contents look like a bare
+			// host:port, userinfo, or an address we would otherwise reject.
+			for _, address := range []string{"8080", "alice@example.com", "pass@localhost:8080", "pass@[::1]:8080", "pass@fe80::1"} {
+				input := spelling + ":" + address
+				t.Run(input, func(t *testing.T) {
+					got, err := normalizeURL(input)
+					if err != nil || got != input {
+						t.Fatalf("normalizeURL(%q) = %q, %v; want unchanged URL", input, got, err)
+					}
+				})
+			}
+		}
 	}
 }
 

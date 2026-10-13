@@ -45,7 +45,9 @@ func normalizeURL(raw string) (string, error) {
 		}
 		return "", fmt.Errorf("invalid URL: %w", err)
 	}
-	if u.Host == "" && u.Path == "" && u.Opaque == "" {
+	// Magnet links carry their scheme-specific address entirely in the query.
+	if u.Host == "" && u.Path == "" && u.Opaque == "" &&
+		!(strings.EqualFold(u.Scheme, "magnet") && u.RawQuery != "") {
 		return "", fmt.Errorf("invalid URL: missing host or scheme-specific address")
 	}
 	if strings.EqualFold(u.Scheme, "http") || strings.EqualFold(u.Scheme, "https") {
@@ -81,18 +83,35 @@ func isBareHostPort(raw, scheme string) bool {
 	}
 	switch strings.ToLower(scheme) {
 	case "http", "https", "about", "file", "chrome", "chrome-extension", "data",
-		"blob", "javascript", "mailto", "tel", "view-source", "ftp", "ftps", "ws", "wss":
+		"blob", "javascript", "mailto", "tel", "view-source", "ftp", "ftps", "ws", "wss",
+		"sip", "sips", "xmpp", "sms", "magnet", "irc", "ircs", "news", "nntp",
+		"geo", "webcal", "facetime", "skype":
 		return false
 	}
 	authority, hasUserinfo := bareURLAuthority(raw)
+	// sip:alice@example.com and user:pass@example.com have the same syntax,
+	// so known schemes above always win. For unknown schemes, infer userinfo
+	// only from a single @ with a nonempty, valid password and a DNS hostname,
+	// localhost or an IP literal; single-label hosts also need a numeric port.
+	// Recognizable hosts with malformed ports/IP brackets still go through
+	// HTTPS validation so existing address errors are not hidden as schemes.
+	if hasUserinfo && !hasBarePassword(raw, scheme) {
+		return false
+	}
 	if isUnbracketedIPv6(authority) {
 		return true // Let normalizeURL reject unbracketed IPv6, including fe80::1.
 	}
-	// A password's colon can look like a scheme. Inspect the host after the
-	// userinfo, retaining the original spelling for the final parse.
-	if hasUserinfo && (strings.EqualFold(authority, "localhost") ||
-		strings.Contains(authority, ".") || strings.HasPrefix(authority, "[")) {
-		return true
+	if hasUserinfo {
+		if strings.HasPrefix(authority, "[") {
+			return true
+		}
+		host, _, _ := strings.Cut(authority, ":")
+		if !isDNSHostname(host) {
+			return false
+		}
+		if strings.EqualFold(host, "localhost") || strings.Contains(host, ".") {
+			return true
+		}
 	}
 	host, port, err := net.SplitHostPort(authority)
 	if err != nil || host == "" {
@@ -107,6 +126,37 @@ func isBareHostPort(raw, scheme string) bool {
 	for _, c := range port {
 		if c < '0' || c > '9' {
 			return false
+		}
+	}
+	return true
+}
+
+func hasBarePassword(raw, scheme string) bool {
+	if i := strings.IndexAny(raw, "/?#"); i >= 0 {
+		raw = raw[:i]
+	}
+	at := strings.IndexByte(raw, '@')
+	if at <= len(scheme)+1 || at != strings.LastIndexByte(raw, '@') {
+		return false
+	}
+	// Parse only the credentials, leaving host/port errors to normalizeURL.
+	u, err := url.Parse("//" + raw[:at] + "@example.invalid")
+	return err == nil && u.User != nil
+}
+
+func isDNSHostname(host string) bool {
+	host = strings.TrimSuffix(host, ".")
+	if host == "" || len(host) > 253 {
+		return false
+	}
+	for label := range strings.SplitSeq(host, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, c := range label {
+			if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '-') {
+				return false
+			}
 		}
 	}
 	return true
