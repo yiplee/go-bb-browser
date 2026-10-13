@@ -181,15 +181,32 @@ func (s *Server) scheduleAudit(ctx context.Context, resp []byte) {
 		Error:    errMsg,
 		Time:     meta.at,
 	}
+	s.enqueueAudit(rec)
+}
+
+// enqueueAudit keeps the non-blocking send. Once closeAudit has closed the
+// channel, the record is appended under auditMu so store.Close cannot race it
+// and a late handler cannot panic on a closed channel.
+func (s *Server) enqueueAudit(rec store.LogRecord) {
+	s.auditMu.Lock()
+	defer s.auditMu.Unlock()
+	if s.auditClosed {
+		s.appendAudit(rec)
+		return
+	}
 	s.auditWG.Add(1)
 	select {
 	case s.auditCh <- rec:
 	default:
 		// Preserve the recovery log while bounding memory and goroutine count.
-		if err := s.store.AppendRPC(rec); err != nil && s.logger != nil {
-			s.logger.Warn("append rpc log failed", "err", err, "action", meta.action)
-		}
+		s.appendAudit(rec)
 		s.auditWG.Done()
+	}
+}
+
+func (s *Server) appendAudit(rec store.LogRecord) {
+	if err := s.store.AppendRPC(rec); err != nil && s.logger != nil {
+		s.logger.Warn("append rpc log failed", "err", err, "action", rec.Action)
 	}
 }
 

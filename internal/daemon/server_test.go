@@ -1,12 +1,16 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -256,5 +260,146 @@ func TestListenAndServeShutdown(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("shutdown timed out")
+	}
+}
+
+// blockingTargets stalls PageTargetsContext until release, simulating a CDP call
+// that outlives http.Server.Shutdown's budget.
+type blockingTargets struct {
+	*fakeConn
+	entered chan struct{}
+	release <-chan struct{}
+}
+
+func (b *blockingTargets) PageTargetsContext(ctx context.Context) ([]*target.Info, error) {
+	close(b.entered)
+	select {
+	case <-b.release:
+		return b.PageTargets()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func TestScheduleAuditAfterCloseDoesNotPanic(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: "127.0.0.1:0", StateDir: dir}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := srv.closeAudit(); err != nil {
+			t.Error(err)
+		}
+	})
+
+	srv.auditMu.Lock()
+	srv.auditClosed = true
+	close(srv.auditCh)
+	srv.auditMu.Unlock()
+	<-srv.auditDone
+
+	ctx := contextWithAudit(context.Background(), &auditMeta{
+		action: protocol.MethodTabList,
+		body:   json.RawMessage(`{"jsonrpc":"2.0","method":"tab_list","id":1}`),
+		at:     time.Now().UTC(),
+	})
+	srv.scheduleAudit(ctx, []byte(`{"jsonrpc":"2.0","id":1,"result":{"seq":1}}`))
+
+	data, err := os.ReadFile(filepath.Join(dir, "rpc.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte(`"action":"tab_list"`)) {
+		t.Fatalf("audit missing after close: %s", data)
+	}
+}
+
+func TestShutdownWaitsForHandlerBeforeClosingAudit(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	dir := t.TempDir()
+	cfg := Config{DebuggerURL: "127.0.0.1:9222", ListenAddr: addr, StateDir: dir}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := NewServer(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.SkipBrowserAttach = true
+	srv.shutdownTimeout = 40 * time.Millisecond
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	srv.tabHook = &blockingTargets{fakeConn: &fakeConn{}, entered: entered, release: release}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- srv.ListenAndServe(ctx)
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		res, getErr := http.Get("http://" + addr + "/live")
+		if getErr == nil {
+			res.Body.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal(getErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	clientErr := make(chan error, 1)
+	go func() {
+		res, postErr := http.Post("http://"+addr+"/v1", "application/json", strings.NewReader(rpcReq(protocol.MethodTabList, map[string]any{}, 1)))
+		if res != nil {
+			res.Body.Close()
+		}
+		clientErr <- postErr
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not reach CDP")
+	}
+
+	cancel()
+	time.Sleep(150 * time.Millisecond)
+	select {
+	case err := <-done:
+		t.Fatalf("shutdown returned while handler still in CDP: %v", err)
+	default:
+	}
+	close(release)
+
+	select {
+	case err := <-done:
+		if err != nil && !strings.Contains(err.Error(), "http shutdown") {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("shutdown timed out waiting for handler")
+	}
+	if err := <-clientErr; err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "rpc.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte(`"action":"tab_list"`)) {
+		t.Fatalf("in-flight audit missing: %s", data)
 	}
 }
