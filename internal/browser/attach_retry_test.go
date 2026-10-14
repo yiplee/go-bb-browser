@@ -162,14 +162,14 @@ func TestFailedAttachReleasesAfterReadyOutsideLock(t *testing.T) {
 				}
 			}
 			if observer {
-				obs := &tabObserver{tid: id, ctx: context.Background(), cancel: cancel, ready: ready}
+				obs := &tabObserver{tid: id, ctx: context.Background(), cleanup: &attachCancellation{cancelChild: cancel}, ready: ready}
 				s.observers[id] = obs
 				s.initializeObserver(obs)
 				if s.observers[id] != nil || obs.initErr == nil {
 					t.Fatalf("observer = %v, error = %v", s.observers[id], obs.initErr)
 				}
 			} else {
-				ent := &tabPoolEntry{ctx: context.Background(), cancel: cancel, ready: ready}
+				ent := &tabPoolEntry{ctx: context.Background(), cleanup: &attachCancellation{cancelChild: cancel}, ready: ready}
 				s.tabPool[id] = ent
 				s.initializeTabPoolEntry(id, ent)
 				if s.tabPool[id] != nil || ent.err == nil {
@@ -199,8 +199,8 @@ func TestFailedAttachDoesNotReleaseReplacedEntry(t *testing.T) {
 			s := &Session{tabPool: make(map[target.ID]*tabPoolEntry), observers: make(map[target.ID]*tabObserver)}
 			cancelled := 0
 			cancel := func() { cancelled++ }
-			ent := &tabPoolEntry{ctx: ctx, cancel: cancel, ready: make(chan struct{})}
-			obs := &tabObserver{tid: id, ctx: ctx, cancel: cancel, ready: make(chan struct{})}
+			ent := &tabPoolEntry{ctx: ctx, cleanup: &attachCancellation{cancelChild: cancel}, ready: make(chan struct{})}
+			obs := &tabObserver{tid: id, ctx: ctx, cleanup: &attachCancellation{cancelChild: cancel}, ready: make(chan struct{})}
 			replacementEnt := &tabPoolEntry{}
 			replacementObs := &tabObserver{}
 			s.tabPool[id] = replacementEnt
@@ -296,7 +296,7 @@ func TestReleaseFailedAttachOnlyDetaches(t *testing.T) {
 			c.Target = &chromedp.Target{TargetID: "USER-TAB", SessionID: "SESSION"}
 			ex := &failedAttachExecutor{t: t, ctx: ctx, session: "SESSION", err: detachErr}
 			cancelled := 0
-			releaseFailedAttach(ctx, func() {
+			releaseFailedAttach(ctx, &attachCancellation{cancelChild: func() {
 				cancelled++
 				if c.Target != nil {
 					// Record the CloseTarget that chromedp's watcher would send,
@@ -305,7 +305,7 @@ func TestReleaseFailedAttachOnlyDetaches(t *testing.T) {
 					c.Target = nil
 				}
 				cancel()
-			}, ex)
+			}}, ex)
 			if cancelled != 1 || ctx.Err() != context.Canceled || c.Target != nil {
 				t.Fatalf("cancel calls = %d, context error = %v, Target = %v", cancelled, ctx.Err(), c.Target)
 			}
@@ -318,32 +318,35 @@ func TestReleaseFailedAttachOnlyDetaches(t *testing.T) {
 
 // An inert browser lets the real child cancel watcher read Target without
 // launching Chrome. Its CDP commands expire at the watcher's one-second timeout.
-func failedAttachChild(t *testing.T) (context.Context, context.CancelFunc, context.CancelFunc) {
+func failedAttachChild(t *testing.T) (context.Context, *attachCancellation, context.CancelFunc) {
 	t.Helper()
 	parent, cancelParent := context.WithCancel(context.Background())
 	t.Cleanup(cancelParent)
 	browserCtx, stop := chromedp.NewContext(parent)
 	t.Cleanup(stop)
 	chromedp.FromContext(browserCtx).Browser = &chromedp.Browser{}
-	ctx, cancel := chromedp.NewContext(browserCtx)
-	t.Cleanup(cancel)
+	ctx, cleanup := newAttachContext(browserCtx, "USER-TAB")
+	t.Cleanup(cleanup.cancel)
 	chromedp.FromContext(ctx).Target = &chromedp.Target{TargetID: "USER-TAB", SessionID: "SESSION"}
-	return ctx, cancel, cancelParent
+	return ctx, cleanup, cancelParent
 }
 
 func TestReleaseFailedAttachAlreadyCancelled(t *testing.T) {
-	ctx, cancel, cancelParent := failedAttachChild(t)
+	ctx, cleanup, cancelParent := failedAttachChild(t)
 	c := chromedp.FromContext(ctx)
 	attached := c.Target
 	ex := &failedAttachExecutor{t: t, ctx: ctx, session: "SESSION"}
 
 	// Simulate a session disconnect after the child's Target is established.
 	cancelParent()
+	awaitAttachValue(t, ctx.Done())
+	cancelChild := cleanup.cancelChild
 	cancelled := 0
-	releaseFailedAttach(ctx, func() {
+	cleanup.cancelChild = func() {
 		cancelled++
-		cancel() // Wait for the real cancel watcher before inspecting Target.
-	}, ex)
+		cancelChild() // Wait for the real cancel watcher before inspecting Target.
+	}
+	releaseFailedAttach(ctx, cleanup, ex)
 	if cancelled != 1 || ctx.Err() != context.Canceled {
 		t.Fatalf("cancel calls = %d, context error = %v", cancelled, ctx.Err())
 	}
@@ -356,7 +359,7 @@ func TestReleaseFailedAttachAlreadyCancelled(t *testing.T) {
 }
 
 func TestReleaseFailedAttachCancelledDuringDetach(t *testing.T) {
-	ctx, cancel, cancelParent := failedAttachChild(t)
+	ctx, cleanup, cancelParent := failedAttachChild(t)
 	c := chromedp.FromContext(ctx)
 	attached := c.Target
 	ex := &failedAttachExecutor{
@@ -367,17 +370,20 @@ func TestReleaseFailedAttachCancelledDuringDetach(t *testing.T) {
 	releaseDetach := func() { unblock.Do(func() { close(ex.detachRelease) }) }
 	t.Cleanup(releaseDetach)
 	done := make(chan struct{})
+	cancelChild := cleanup.cancelChild
 	cancelled := 0
+	cleanup.cancelChild = func() {
+		cancelled++
+		cancelChild()
+	}
 	go func() {
 		defer close(done)
-		releaseFailedAttach(ctx, func() {
-			cancelled++
-			cancel()
-		}, ex)
+		releaseFailedAttach(ctx, cleanup, ex)
 	}()
 	awaitAttachValue(t, ex.detachStarted)
 	// Cancellation starts chromedp's watcher while explicit detach is blocked.
 	cancelParent()
+	awaitAttachValue(t, ctx.Done())
 	releaseDetach()
 	awaitAttachValue(t, done)
 	if cancelled != 1 || ctx.Err() != context.Canceled {
@@ -388,6 +394,106 @@ func TestReleaseFailedAttachCancelledDuringDetach(t *testing.T) {
 	}
 	if len(ex.calls) != 1 || ex.calls[0] != target.CommandDetachFromTarget {
 		t.Fatalf("commands = %v, want one explicit Target.detachFromTarget", ex.calls)
+	}
+}
+
+// The second lookup occurs after release has checked cancelled, immediately
+// before it clears Target. Inject a session disconnect into that exact window.
+type targetClearContext struct {
+	context.Context
+	lookups     int
+	beforeClear func()
+}
+
+func (c *targetClearContext) Value(key any) any {
+	c.lookups++
+	if c.lookups == 2 {
+		c.beforeClear()
+	}
+	return c.Context.Value(key)
+}
+
+func TestReleaseFailedAttachCancelledBeforeTargetClear(t *testing.T) {
+	ctx, cleanup, cancelParent := failedAttachChild(t)
+	c := chromedp.FromContext(ctx)
+	// Keep the real watcher but avoid CDP commands against the inert browser.
+	c.Target = &chromedp.Target{}
+	wrapped := &targetClearContext{Context: ctx, beforeClear: func() {
+		cancelParent()
+		if ctx.Err() != nil {
+			t.Error("session cancellation reached the child before Target was cleared")
+		}
+		if cleanup.mu.TryLock() {
+			cleanup.mu.Unlock()
+			t.Error("Target clear does not hold the cancellation mutex")
+		}
+	}}
+	releaseFailedAttach(wrapped, cleanup, nil)
+	if wrapped.lookups != 2 {
+		t.Fatalf("context lookups = %d, want cancellation injected before Target clear", wrapped.lookups)
+	}
+	if c.Target != nil || ctx.Err() != context.Canceled {
+		t.Fatalf("Target = %v, context error = %v", c.Target, ctx.Err())
+	}
+}
+
+func TestReleaseFailedAttachConcurrentSessionCancellation(t *testing.T) {
+	for range 256 {
+		ctx, cleanup, cancelParent := failedAttachChild(t)
+		c := chromedp.FromContext(ctx)
+		attached := &chromedp.Target{}
+		c.Target = attached
+		start := make(chan struct{})
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			<-start
+			cancelParent()
+		}()
+		close(start)
+		releaseFailedAttach(ctx, cleanup, nil)
+		awaitAttachValue(t, done)
+		if ctx.Err() != context.Canceled || (c.Target != nil && c.Target != attached) {
+			t.Fatalf("context error = %v, Target = %v", ctx.Err(), c.Target)
+		}
+	}
+}
+
+func TestAttachCancellationStopsParentCallback(t *testing.T) {
+	for _, action := range []string{"cancel", "release", "forget_pool", "forget_observer", "session_close"} {
+		t.Run(action, func(t *testing.T) {
+			parent, cancelParent := chromedp.NewContext(context.Background())
+			t.Cleanup(cancelParent)
+			chromedp.FromContext(parent).Browser = &chromedp.Browser{}
+			ctx, cleanup := newAttachContext(parent, "TAB")
+			t.Cleanup(cleanup.cancel)
+			s := &Session{
+				tabPool:   map[target.ID]*tabPoolEntry{"TAB": {ctx: ctx, cleanup: cleanup}},
+				observers: map[target.ID]*tabObserver{"TAB": {ctx: ctx, cleanup: cleanup}},
+			}
+			switch action {
+			case "cancel":
+				cleanup.cancel()
+			case "release":
+				releaseFailedAttach(ctx, cleanup, nil)
+			case "forget_pool":
+				s.observers = nil
+				s.ForgetTarget("TAB")
+			case "forget_observer":
+				s.tabPool = nil
+				s.ForgetTarget("TAB")
+			case "session_close":
+				s.Close()
+				if ctx.Err() != nil {
+					t.Error("session close cancelled a still-open tab")
+				}
+			}
+			// The live parent has not fired the callback, so false proves that
+			// the lifecycle operation already unregistered it.
+			if cleanup.stopParent() {
+				t.Error("parent cancellation callback was still registered")
+			}
+		})
 	}
 }
 

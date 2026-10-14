@@ -50,7 +50,7 @@ type queuedObservation struct {
 type tabObserver struct {
 	tid     target.ID
 	ctx     context.Context
-	cancel  context.CancelFunc
+	cleanup *attachCancellation
 	rec     ObsRecorder
 	logger  *slog.Logger
 	queue   chan queuedObservation
@@ -84,9 +84,9 @@ func (s *Session) EnsureObservation(ctx context.Context, tid target.ID, kind Obs
 	}
 	obs := s.observers[tid]
 	if obs == nil {
-		tabCtx, cancel := chromedp.NewContext(s.ctx, chromedp.WithTargetID(tid))
+		tabCtx, cleanup := newAttachContext(s.ctx, tid)
 		obs = &tabObserver{
-			tid: tid, ctx: tabCtx, cancel: cancel, rec: rec, logger: lg,
+			tid: tid, ctx: tabCtx, cleanup: cleanup, rec: rec, logger: lg,
 			queue: make(chan queuedObservation, observationQueueCapacity), ready: make(chan struct{}),
 		}
 		s.observers[tid] = obs
@@ -128,7 +128,7 @@ func (s *Session) initializeObserver(o *tabObserver) {
 		}
 		close(o.ready)
 		if release {
-			releaseFailedAttach(o.ctx, o.cancel, browserExecutor(o.ctx))
+			releaseFailedAttach(o.ctx, o.cleanup, browserExecutor(o.ctx))
 		}
 		return
 	}
