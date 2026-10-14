@@ -157,7 +157,7 @@ Examples:
 	c.Flags().StringVar(&bind, "bind", "127.0.0.1", "Chrome --remote-debugging-address")
 	c.Flags().BoolVar(&headless, "headless", false, "launch Chrome in --headless=new mode")
 	c.Flags().BoolVar(&detach, "detach", true, "return immediately after Chrome starts (otherwise wait for it to exit)")
-	c.Flags().StringSliceVar(&extraArgs, "extra-arg", nil, "extra argument(s) passed verbatim to Chrome (repeatable)")
+	c.Flags().StringArrayVar(&extraArgs, "extra-arg", nil, "extra argument(s) passed verbatim to Chrome (repeatable)")
 	c.Flags().StringVar(&startURL, "start-url", "about:blank", "URL to open on launch (use empty string to let Chrome decide)")
 	c.Flags().BoolVar(&waitReady, "wait-ready", true, "wait until the CDP endpoint accepts TCP connections before returning")
 	c.Flags().DurationVar(&readyTO, "wait-timeout", 15*time.Second, "timeout for --wait-ready")

@@ -129,6 +129,51 @@ func TestLaunchNormalizesStartURL(t *testing.T) {
 	}
 }
 
+func TestLaunchExtraArgPreservesCommas(t *testing.T) {
+	dir := t.TempDir()
+	argsfile := filepath.Join(dir, "args.json")
+	t.Setenv("BB_BROWSER_LAUNCH_HELPER", "args")
+	t.Setenv("BB_BROWSER_LAUNCH_ARGSFILE", argsfile)
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const (
+		features = "--disable-features=NetworkService,NetworkServiceInProcess"
+		bypass   = "--proxy-bypass-list=<-loopback>,127.0.0.1"
+	)
+	cmd := newLaunchCmd()
+	cmd.SetArgs([]string{
+		"--chrome", bin,
+		"--profile", filepath.Join(dir, "profile"),
+		"--detach=false",
+		"--wait-ready=false",
+		"--extra-arg=" + features,
+		"--extra-arg=" + bypass,
+	})
+	if err := withDiscardedStdio(cmd.Execute); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(argsfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var args []string
+	if err := json.Unmarshal(data, &args); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, arg := range args {
+		switch arg {
+		case features, bypass, "NetworkServiceInProcess", "127.0.0.1":
+			got = append(got, arg)
+		}
+	}
+	if len(got) != 2 || got[0] != features || got[1] != bypass {
+		t.Fatalf("chrome args = %q; extra = %q, want [%q %q]", args, got, features, bypass)
+	}
+}
+
 func TestLaunchWaitTimeoutStopsProcess(t *testing.T) {
 	pid, _, err := runFakeLaunch(t, "sleep", 300*time.Millisecond, false)
 	if err == nil || !strings.Contains(err.Error(), "timeout") {
