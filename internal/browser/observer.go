@@ -50,12 +50,14 @@ type queuedObservation struct {
 type tabObserver struct {
 	tid     target.ID
 	ctx     context.Context
-	cancel  context.CancelFunc
+	cleanup *attachCancellation
 	rec     ObsRecorder
 	logger  *slog.Logger
 	queue   chan queuedObservation
 	ready   chan struct{}
 	initErr error
+
+	domainsDisabled bool
 
 	mu             sync.Mutex
 	listenerCancel context.CancelFunc
@@ -82,14 +84,13 @@ func (s *Session) EnsureObservation(ctx context.Context, tid target.ID, kind Obs
 	}
 	obs := s.observers[tid]
 	if obs == nil {
-		tabCtx, cancel := chromedp.NewContext(s.ctx, chromedp.WithTargetID(tid))
+		tabCtx, cleanup := newAttachContext(s.ctx, tid)
 		obs = &tabObserver{
-			tid: tid, ctx: tabCtx, cancel: cancel, rec: rec, logger: lg,
+			tid: tid, ctx: tabCtx, cleanup: cleanup, rec: rec, logger: lg,
 			queue: make(chan queuedObservation, observationQueueCapacity), ready: make(chan struct{}),
 		}
 		s.observers[tid] = obs
-		go obs.runWriter()
-		go obs.initialize()
+		go s.initializeObserver(obs)
 	}
 	s.obsMu.Unlock()
 	select {
@@ -100,25 +101,59 @@ func (s *Session) EnsureObservation(ctx context.Context, tid target.ID, kind Obs
 	case <-ctx.Done():
 		return wrapCDPError("Target.attachObserver", tid, ctx.Err())
 	}
+	if err := obs.disableUntilLeased(ctx); err != nil {
+		return err
+	}
 	return obs.activate(ctx, kind)
 }
 
-func (o *tabObserver) initialize() {
+var disableObservationDomains = func(tabCtx, requestCtx context.Context) error {
+	return runCDPWithContext(tabCtx, requestCtx, network.Disable(), runtime.Disable(), cdplog.Disable())
+}
+
+func (s *Session) initializeObserver(o *tabObserver) {
 	// Bind chromedp's Target.run to the observer's long-lived context, never to a
 	// request timeout child. Cancelling the latter would otherwise kill the session.
 	err := chromedp.Run(o.ctx)
-	if err == nil {
-		// chromedp enables these domains while attaching. Disable this observer
-		// session until a corresponding observation capability is leased.
-		initCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		err = runCDPWithContext(o.ctx, initCtx, network.Disable(), runtime.Disable(), cdplog.Disable())
-		cancel()
+	if err != nil {
+		s.obsMu.Lock()
+		o.initErr = wrapCDPError("Target.attachObserver", o.tid, err)
+		release := s.observers[o.tid] == o
+		if release {
+			delete(s.observers, o.tid) // retry with a fresh context on the next call
+		}
+		s.obsMu.Unlock()
+		if o.logger != nil {
+			o.logger.Debug("observer target initialization ended", "target", o.tid, "err", o.initErr)
+		}
+		close(o.ready)
+		if release {
+			releaseFailedAttach(o.ctx, o.cleanup, browserExecutor(o.ctx))
+		}
+		return
 	}
-	o.initErr = wrapCDPError("Target.attachObserver", o.tid, err)
-	if o.initErr != nil && o.logger != nil {
-		o.logger.Debug("observer target initialization ended", "target", o.tid, "err", o.initErr)
-	}
+	go o.runWriter()
 	close(o.ready)
+}
+
+func (o *tabObserver) disableUntilLeased(ctx context.Context) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.domainsDisabled {
+		return nil
+	}
+	// Attach already succeeded. A Disable timeout must not stick on this context.
+	limit, cancel := context.WithTimeout(ctx, 2*time.Second)
+	err := disableObservationDomains(o.ctx, limit)
+	cancel()
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Debug("observer domain disable failed", "target", o.tid, "err", err)
+		}
+		return wrapCDPError("Target.attachObserver", o.tid, err)
+	}
+	o.domainsDisabled = true
+	return nil
 }
 
 func (o *tabObserver) activate(ctx context.Context, kind ObservationKind) error {

@@ -33,6 +33,76 @@ func browserExecutor(ctx context.Context) cdp.Executor {
 	return c.Browser
 }
 
+// attachCancellation owns every cancellation of an attach context so Target can
+// be cleared before chromedp's cancel watcher starts reading it.
+type attachCancellation struct {
+	mu          sync.Mutex
+	cancelled   bool
+	cancelChild context.CancelFunc
+	stopParent  func() bool
+}
+
+func newAttachContext(parent context.Context, id target.ID) (context.Context, *attachCancellation) {
+	ctx, cancel := chromedp.NewContext(context.WithoutCancel(parent), chromedp.WithTargetID(id))
+	a := &attachCancellation{cancelChild: cancel}
+	a.stopParent = context.AfterFunc(parent, func() {
+		a.mu.Lock()
+		a.cancelled = true
+		a.mu.Unlock()
+		cancel()
+	})
+	return ctx, a
+}
+
+func (a *attachCancellation) stop() {
+	if a.stopParent != nil {
+		a.stopParent()
+	}
+}
+
+func (a *attachCancellation) cancel() {
+	a.stop()
+	a.mu.Lock()
+	a.cancelled = true
+	a.mu.Unlock()
+	a.cancelChild()
+}
+
+// releaseFailedAttach releases a child context without closing the user's tab.
+// The caller must own cleanup exclusively: once an entry has been removed by
+// ForgetTarget or CloseTarget, their cancel watcher may already be using Target.
+func releaseFailedAttach(ctx context.Context, cleanup *attachCancellation, ex cdp.Executor) {
+	defer cleanup.cancel()
+	cleanup.mu.Lock()
+	if cleanup.cancelled {
+		// Cancellation has handed Target to chromedp's cancel watcher.
+		cleanup.mu.Unlock()
+		return
+	}
+	c := chromedp.FromContext(ctx)
+	var id target.SessionID
+	if c != nil && c.Target != nil {
+		id = c.Target.SessionID
+	}
+	cleanup.mu.Unlock()
+	if c != nil {
+		if id != "" && ex != nil {
+			// Cleanup is bounded and can finish if the attach context expires.
+			cleanupCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+			_ = target.DetachFromTarget().WithSessionID(id).Do(cdp.WithExecutor(cleanupCtx, ex))
+			stop()
+		}
+		cleanup.mu.Lock()
+		if !cleanup.cancelled {
+			// chromedp's cancel watcher otherwise detaches AND closes this target.
+			// If cancellation occurred during detach, the watcher may already be
+			// reading Target, so leave it alone in that case.
+			chromedp.FromContext(ctx).Target = nil
+		}
+		cleanup.mu.Unlock()
+	}
+}
+
 // Session wraps a chromedp remote allocator + browser context for tab-scoped CDP APIs.
 // Only NewRemoteAllocator is used — the daemon never launches Chrome (see IMPLEMENTATION_PLAN §5.1).
 type Session struct {
@@ -61,10 +131,10 @@ type TargetEvent struct {
 }
 
 type tabPoolEntry struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	ready  chan struct{}
-	err    error
+	ctx     context.Context
+	cleanup *attachCancellation
+	ready   chan struct{}
+	err     error
 }
 
 func runCDP(ctx context.Context, actions ...chromedp.Action) error {
@@ -309,10 +379,16 @@ func (s *Session) Close() {
 		return
 	}
 	s.obsMu.Lock()
+	for _, obs := range s.observers {
+		obs.cleanup.stop()
+	}
 	s.observers = nil
 	s.obsMu.Unlock()
 
 	s.poolMu.Lock()
+	for _, ent := range s.tabPool {
+		ent.cleanup.stop()
+	}
 	s.tabPool = nil
 	s.poolMu.Unlock()
 
@@ -332,7 +408,7 @@ func (s *Session) ForgetTarget(id target.ID) {
 	s.poolMu.Lock()
 	if ent := s.tabPool[id]; ent != nil {
 		delete(s.tabPool, id)
-		cancel = ent.cancel
+		cancel = ent.cleanup.cancel
 	}
 	s.poolMu.Unlock()
 	if cancel != nil {
@@ -342,8 +418,8 @@ func (s *Session) ForgetTarget(id target.ID) {
 	obs := s.observers[id]
 	delete(s.observers, id)
 	s.obsMu.Unlock()
-	if obs != nil && obs.cancel != nil {
-		obs.cancel()
+	if obs != nil && obs.cleanup != nil {
+		obs.cleanup.cancel()
 	}
 	s.ClearRoutesForTarget(id)
 }
@@ -535,9 +611,9 @@ func (s *Session) tabChromeCtxContext(requestCtx context.Context, tabID target.I
 		}
 	}
 	ent := &tabPoolEntry{ready: make(chan struct{})}
-	ctx, cancel := chromedp.NewContext(s.ctx, chromedp.WithTargetID(tabID))
+	ctx, cleanup := newAttachContext(s.ctx, tabID)
 	ent.ctx = ctx
-	ent.cancel = cancel
+	ent.cleanup = cleanup
 	s.tabPool[tabID] = ent
 	s.poolMu.Unlock()
 	go s.initializeTabPoolEntry(tabID, ent)
@@ -555,18 +631,19 @@ func (s *Session) tabChromeCtxContext(requestCtx context.Context, tabID target.I
 func (s *Session) initializeTabPoolEntry(tabID target.ID, ent *tabPoolEntry) {
 	err := chromedp.Run(ent.ctx)
 	s.poolMu.Lock()
-	defer s.poolMu.Unlock()
+	release := false
 	if s.tabPool[tabID] != ent {
 		ent.err = &CDPError{Kind: ErrorTargetGone, Op: "Target.attachToTarget", Target: tabID, Err: fmt.Errorf("target removed while attaching")}
-		close(ent.ready)
-		return
-	}
-	if err != nil {
+	} else if err != nil {
+		delete(s.tabPool, tabID) // the next call can retry with a fresh context
 		ent.err = wrapCDPError("Target.attachToTarget", tabID, err)
-		close(ent.ready)
-		return
+		release = true
 	}
+	s.poolMu.Unlock()
 	close(ent.ready)
+	if release {
+		releaseFailedAttach(ent.ctx, ent.cleanup, browserExecutor(ent.ctx))
+	}
 }
 
 // CreatePageTarget opens a new page target (INV-7: works when zero tabs exist).
@@ -622,7 +699,7 @@ func (s *Session) CloseTargetContext(ctx context.Context, id target.ID) error {
 	s.poolMu.Lock()
 	if ent, ok := s.tabPool[id]; ok {
 		delete(s.tabPool, id)
-		poolCancel = ent.cancel
+		poolCancel = ent.cleanup.cancel
 	}
 	s.poolMu.Unlock()
 	if poolCancel != nil {
