@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -187,10 +188,11 @@ func TestClearRoutesForTargetWinsOverListen(t *testing.T) {
 
 	const tab target.ID = "tab"
 	rule := []NetworkRouteRule{{URLPattern: "https://example.com/*"}}
-	rs := newRouteState()
+	s := newSession(context.Background(), func() {})
+	rs := s.routes()
 	rs.rules[tab] = append([]NetworkRouteRule(nil), rule...)
 	_, gen := rs.snapshot(tab)
-	(&Session{routeState: rs}).ClearRoutesForTarget(tab)
+	s.ClearRoutesForTarget(tab)
 	if w := rs.ensureWorker(tab, context.Background(), gen); w != nil {
 		t.Fatal("worker started after clear")
 	}
@@ -203,9 +205,9 @@ func TestClearRoutesForTargetWinsOverListen(t *testing.T) {
 		mu.Unlock()
 	}
 	for range 100 {
-		rs := newRouteState()
+		s := newSession(context.Background(), func() {})
+		rs := s.routes()
 		rs.rules[tab] = append([]NetworkRouteRule(nil), rule...)
-		s := &Session{routeState: rs}
 		var wg sync.WaitGroup
 		wg.Add(2)
 		go func() {
@@ -229,5 +231,139 @@ func TestClearRoutesForTargetWinsOverListen(t *testing.T) {
 		}
 		ctxs = nil
 		mu.Unlock()
+	}
+}
+
+func TestNewSessionInitializesRouteState(t *testing.T) {
+	s := newSession(context.Background(), func() {})
+	rs := s.routes()
+	if rs == nil {
+		t.Fatal("newSession did not allocate routeState")
+	}
+	if rs.rules == nil || rs.workers == nil || rs.gen == nil {
+		t.Fatal("newSession did not allocate route rules, workers, and generations")
+	}
+}
+
+func TestNetworkRoutesRejectUninitializedSession(t *testing.T) {
+	rule := NetworkRouteRule{URLPattern: "https://example.com/*"}
+	for _, tc := range []struct {
+		name string
+		call func(*Session) error
+	}{
+		{"set", func(s *Session) error {
+			return s.SetNetworkRoutesContext(context.Background(), "tab", []NetworkRouteRule{rule})
+		}},
+		{"append", func(s *Session) error {
+			return s.AppendNetworkRouteContext(context.Background(), "tab", rule)
+		}},
+		{"remove", func(s *Session) error {
+			return s.RemoveNetworkRoutesContext(context.Background(), "tab", "")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Session{}
+			if err := tc.call(s); err == nil || !strings.Contains(err.Error(), "route state is not initialized") {
+				t.Fatalf("uninitialized session returned %v, want route state error", err)
+			}
+			s.ClearRoutesForTarget("tab")
+			if got := s.NetworkRouteCount("tab"); got != 0 {
+				t.Fatalf("uninitialized session has %d routes, want 0", got)
+			}
+			if s.routes() != nil {
+				t.Fatal("route state allocated outside the constructor")
+			}
+		})
+	}
+}
+
+func TestSessionRoutesConcurrentClearCancelsListeners(t *testing.T) {
+	const tabs = 4
+	s := newSession(context.Background(), func() {})
+	rs := s.routes()
+	tabCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	registered := make(chan context.Context, tabs)
+	releaseListen := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseListen) }) }
+	var registering sync.WaitGroup
+	orig := listenTarget
+	listenTarget = func(ctx context.Context, _ func(any)) {
+		registered <- ctx
+		<-releaseListen
+	}
+	t.Cleanup(func() {
+		release()
+		registering.Wait()
+		listenTarget = orig
+	})
+
+	for i := range tabs {
+		tab := target.ID("tab-" + string(rune('a'+i)))
+		rs.mu.Lock()
+		rs.rules[tab] = []NetworkRouteRule{{URLPattern: "https://example.com/*"}}
+		rs.mu.Unlock()
+		registering.Add(1)
+		go func() {
+			defer registering.Done()
+			armRoute(rs, tabCtx, tab)
+		}()
+	}
+	var listeners []context.Context
+	for range tabs {
+		select {
+		case ctx := <-registered:
+			listeners = append(listeners, ctx)
+			if ctx.Err() != nil {
+				t.Fatal("listener canceled before clear")
+			}
+		case <-time.After(time.Second):
+			t.Fatal("rule registration did not reach listenTarget")
+		}
+	}
+
+	start := make(chan struct{})
+	var clearing sync.WaitGroup
+	for i := range tabs {
+		tab := target.ID("tab-" + string(rune('a'+i)))
+		if got := s.NetworkRouteCount(tab); got != 1 {
+			t.Fatalf("before clear: %s has %d routes, want 1", tab, got)
+		}
+		clearing.Add(2)
+		go func() {
+			defer clearing.Done()
+			<-start
+			s.ClearRoutesForTarget(tab)
+		}()
+		go func() {
+			defer clearing.Done()
+			<-start
+			_ = s.NetworkRouteCount(tab)
+		}()
+	}
+	close(start)
+	clearing.Wait()
+	for _, ctx := range listeners {
+		if ctx.Err() != context.Canceled {
+			t.Fatal("listener still active after clear while registration is blocked")
+		}
+	}
+	release()
+	registering.Wait()
+	for _, ctx := range listeners {
+		if ctx.Err() != context.Canceled {
+			t.Fatal("listener still active after registration completed")
+		}
+	}
+	for i := range tabs {
+		tab := target.ID("tab-" + string(rune('a'+i)))
+		if got := s.NetworkRouteCount(tab); got != 0 {
+			t.Fatalf("after clear: %s has %d routes, want 0", tab, got)
+		}
+		if rs.worker(tab) != nil {
+			t.Fatalf("worker for %s still present after clear", tab)
+		}
 	}
 }

@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"net/url"
 	"strings"
 	"sync"
@@ -55,10 +56,9 @@ func newRouteState() *routeState {
 	}
 }
 
-func (s *Session) routeStateLocked() *routeState {
-	if s.routeState == nil {
-		s.routeState = newRouteState()
-	}
+func (s *Session) routes() *routeState {
+	s.routeMu.RLock()
+	defer s.routeMu.RUnlock()
 	return s.routeState
 }
 
@@ -71,7 +71,10 @@ func (s *Session) SetNetworkRoutesContext(ctx context.Context, tabID target.ID, 
 	if s == nil {
 		return errNilSession()
 	}
-	rs := s.routeStateLocked()
+	rs := s.routes()
+	if rs == nil {
+		return fmt.Errorf("browser session route state is not initialized")
+	}
 	rs.mu.Lock()
 	if len(rules) == 0 {
 		delete(rs.rules, tabID)
@@ -93,7 +96,10 @@ func (s *Session) AppendNetworkRouteContext(ctx context.Context, tabID target.ID
 	if s == nil {
 		return errNilSession()
 	}
-	rs := s.routeStateLocked()
+	rs := s.routes()
+	if rs == nil {
+		return fmt.Errorf("browser session route state is not initialized")
+	}
 	rs.mu.Lock()
 	rs.rules[tabID] = append(rs.rules[tabID], rule)
 	rs.mu.Unlock()
@@ -109,7 +115,10 @@ func (s *Session) RemoveNetworkRoutesContext(ctx context.Context, tabID target.I
 	if s == nil {
 		return errNilSession()
 	}
-	rs := s.routeStateLocked()
+	rs := s.routes()
+	if rs == nil {
+		return fmt.Errorf("browser session route state is not initialized")
+	}
 	rs.mu.Lock()
 	pat := strings.TrimSpace(urlPattern)
 	if pat == "" {
@@ -134,12 +143,18 @@ func (s *Session) RemoveNetworkRoutesContext(ctx context.Context, tabID target.I
 
 // NetworkRouteCount returns how many interception rules are active for a tab.
 func (s *Session) NetworkRouteCount(tabID target.ID) int {
-	if s == nil || s.routeState == nil {
+	if s == nil {
 		return 0
 	}
-	s.routeState.mu.Lock()
-	defer s.routeState.mu.Unlock()
-	return len(s.routeState.rules[tabID])
+	s.routeMu.RLock()
+	defer s.routeMu.RUnlock()
+	rs := s.routeState
+	if rs == nil {
+		return 0
+	}
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	return len(rs.rules[tabID])
 }
 
 func (s *Session) syncRoutes(ctx context.Context, rs *routeState, tabID target.ID) error {
@@ -437,10 +452,13 @@ func wildcardMatch(pattern, s string) bool {
 
 // ClearRoutesForTarget removes routing rules when a tab target disappears.
 func (s *Session) ClearRoutesForTarget(tabID target.ID) {
-	if s == nil || s.routeState == nil {
+	if s == nil {
 		return
 	}
-	rs := s.routeState
+	rs := s.routes()
+	if rs == nil {
+		return
+	}
 	rs.mu.Lock()
 	delete(rs.rules, tabID)
 	if rs.gen == nil {
