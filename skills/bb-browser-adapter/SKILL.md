@@ -39,7 +39,7 @@ bb-browser network clear --tab <id>
 bb-browser reload --tab <id>
 bb-browser network requests api --tab <id>             # 位置参数 = URL 子串过滤
 bb-browser network requests --since <n> --tab <id>     # 增量
-bb-browser fetch /internal/api/foo.json --tab <id>     # 原样带 Cookie 验证
+bb-browser fetch https://example.com/internal/api/foo.json --tab <id>     # 原样带 Cookie 验证
 bb-browser console --tab <id>                          # 看前端打印
 bb-browser errors  --tab <id>                          # 看 JS 错误
 ```
@@ -52,7 +52,7 @@ bb-browser errors  --tab <id>                          # 看 JS 错误
 
 ```bash
 bb-browser eval "(async()=>{const r=await fetch('/api/me.json',{credentials:'include'});return {ok:r.ok,s:r.status,j:await r.json()}})()" --tab <id>
-bb-browser fetch /api/me.json --tab <id>               # 更短，CLI 内置 credentials:'include'
+bb-browser fetch https://example.com/api/me.json --tab <id>               # CLI 内置 credentials:'include'
 ```
 
 确认：**仅靠 Cookie 够不够？** 够 → Tier 1；需要显式 header → Tier 2；需要读页面内部状态 / webpack 模块 → Tier 3（见下）。
@@ -215,8 +215,7 @@ async function(args) {
 
 技巧：
 
-- Bearer 常量从 `bb-browser network requests api --with-body` 里拿第一次 `/i/api/…` 请求头中的值（多数 SPA 内置到 JS bundle；抄一次基本长期稳定）。
-- CSRF/XSRF：优先从 `document.cookie` 读；cookie 是 `HttpOnly` 时从网络请求头复制。
+- 请求头不在 network 缓冲里，Bearer/CSRF 需要在页面里用 `eval` 读取。
 
 ### Tier 3 —— webpack / 框架内部状态（10 分钟+，最后手段）
 

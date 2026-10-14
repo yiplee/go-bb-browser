@@ -55,11 +55,10 @@ bb-browser run ~/.bb-browser/sites/demo/foo.js hello --json
 
 ## fetch — 页面内 fetch（带登录态）
 
-CLI 对应 daemon 的 **`fetch`**：在标签页里执行 `fetch()`，`credentials: 'include'`，相对路径相对当前页 origin。
+CLI 对应 daemon 的 **`fetch`**：在标签页里执行 `fetch()`，`credentials: 'include'`。
 
 ```bash
 bb-browser fetch https://example.com/api/me.json
-bb-browser fetch /api/me.json
 bb-browser fetch https://api.example.com/x --method POST --body '{"k":"v"}'
 bb-browser fetch https://x.com/i.json --headers '{"Authorization":"Bearer ..."}' --json
 ```
@@ -132,7 +131,7 @@ bb-browser health
 | 文档 | 说明 |
 |------|------|
 | [references/script-system.md](references/script-system.md) | `run`、@meta、`domain` 与自动 tab |
-| [references/adapter-development.md](references/adapter-development.md) | 自定义 adapter |
+| [bb-browser-adapter/SKILL.md](../bb-browser-adapter/SKILL.md) | 自定义 adapter |
 | [references/fetch-and-network.md](references/fetch-and-network.md) | `fetch` 与 `network` 子命令、JSON-RPC 对应关系 |
 | [references/snapshot-refs.md](references/snapshot-refs.md) | `@ref` 与 `__bb_snap_ref` |
 | [references/daemon-jsonrpc.md](references/daemon-jsonrpc.md) | `POST /v1` 方法表（Agent 直连） |

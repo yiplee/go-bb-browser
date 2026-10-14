@@ -7,7 +7,7 @@ import (
 	"github.com/chromedp/cdproto/target"
 )
 
-// Default observation ring capacities (IMPLEMENTATION_PLAN §6.2).
+// Default observation ring capacities.
 const (
 	DefaultNetworkCap = 500
 	DefaultConsoleCap = 200

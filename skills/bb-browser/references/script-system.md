@@ -4,7 +4,7 @@
 
 Adapter 为 **JavaScript 文件**，可内含 `/* @meta { ... } */` JSON 元数据。`bb-browser run` 由 daemon 在 **目标页面的 JS 环境**里执行（通过 **`eval`**，脚本为 async IIFE），从而使用页面 Cookie / 登录态。
 
-元数据字段约定见下表（开发与调试另见 [adapter-development.md](adapter-development.md)）：
+元数据字段约定见下表（开发与调试另见 [bb-browser-adapter/SKILL.md](../../bb-browser-adapter/SKILL.md)）：
 
 | 字段 | 说明 |
 |------|------|

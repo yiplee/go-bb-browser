@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Agent-facing notes for this repository (planning phase).
+Agent-facing notes for this repository.
 
 ## Intent
 
@@ -10,11 +10,9 @@ Mirror the **bb-browser** shape — **CLI → HTTP daemon → Chrome via CDP onl
 
 Upstream reference architecture (TypeScript): CLI and MCP talk HTTP to a daemon; the daemon holds CDP connections, dispatches commands, and maintains per-tab state with ring buffers and a global monotonic `seq`.
 
-Canonical planning document: `docs/IMPLEMENTATION_PLAN.md`.
-
 ## Design invariants (ported from bb-browser)
 
-Before implementing handlers, preserve these invariants:
+Preserve these invariants:
 
 1. **INV-1:** Operational responses include **short tab id** and **`seq`**.
 2. **INV-2:** Observation-style responses (network / console / errors) include a **cursor** for incremental reads.
