@@ -109,6 +109,8 @@ type Session struct {
 	ctx    context.Context
 	cancel context.CancelFunc // cancels chromedp context then allocator
 
+	// routeMu protects access to routeState; allocate it only in newSession.
+	routeMu    sync.RWMutex
 	routeState *routeState
 
 	obsMu     sync.Mutex
@@ -122,6 +124,15 @@ type Session struct {
 
 	targetEvents chan TargetEvent
 	targetDirty  atomic.Bool
+}
+
+func newSession(ctx context.Context, cancel context.CancelFunc) *Session {
+	return &Session{
+		ctx:          ctx,
+		cancel:       cancel,
+		routeState:   newRouteState(),
+		targetEvents: make(chan TargetEvent, 256),
+	}
 }
 
 // TargetEvent is the small, non-blocking lifecycle stream consumed by daemon state.
@@ -290,7 +301,7 @@ func Connect(parent context.Context, debuggerURL string) (*Session, error) {
 		ctxCancel()
 		allocCancel()
 	}
-	s := &Session{ctx: ctx, cancel: cancel, routeState: newRouteState(), targetEvents: make(chan TargetEvent, 256)}
+	s := newSession(ctx, cancel)
 	s.listenTargetEvents()
 	return s, nil
 }
