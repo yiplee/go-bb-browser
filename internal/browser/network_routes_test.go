@@ -231,3 +231,36 @@ func TestClearRoutesForTargetWinsOverListen(t *testing.T) {
 		mu.Unlock()
 	}
 }
+
+func TestNilRouteStateConcurrentAccess(t *testing.T) {
+	const tabs = 4
+	for range 64 {
+		s := &Session{}
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(tabs * 3)
+		for i := range tabs {
+			tab := target.ID("tab-" + string(rune('a'+i)))
+			go func() {
+				defer wg.Done()
+				<-start
+				_ = s.routeStateLocked()
+			}()
+			go func() {
+				defer wg.Done()
+				<-start
+				s.ClearRoutesForTarget(tab)
+			}()
+			go func() {
+				defer wg.Done()
+				<-start
+				_ = s.NetworkRouteCount(tab)
+			}()
+		}
+		close(start)
+		wg.Wait()
+		if s.routeState != nil {
+			t.Fatal("routeState published during concurrent access")
+		}
+	}
+}

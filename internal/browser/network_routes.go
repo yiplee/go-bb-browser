@@ -56,9 +56,6 @@ func newRouteState() *routeState {
 }
 
 func (s *Session) routeStateLocked() *routeState {
-	if s.routeState == nil {
-		s.routeState = newRouteState()
-	}
 	return s.routeState
 }
 

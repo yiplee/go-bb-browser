@@ -290,7 +290,7 @@ func Connect(parent context.Context, debuggerURL string) (*Session, error) {
 		ctxCancel()
 		allocCancel()
 	}
-	s := &Session{ctx: ctx, cancel: cancel, targetEvents: make(chan TargetEvent, 256)}
+	s := &Session{ctx: ctx, cancel: cancel, routeState: newRouteState(), targetEvents: make(chan TargetEvent, 256)}
 	s.listenTargetEvents()
 	return s, nil
 }
