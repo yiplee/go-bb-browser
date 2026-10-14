@@ -179,7 +179,7 @@ err := c.Call(ctx, method, params, resultPtr)
 | `Console` | `console` | 同上 | 同上 |
 | `Errors` | `errors` | 同上 | 同上 |
 
-`ObsQueryResult` 含 `events`、`cursor`、可选 `dropped`，与实现计划中的增量观测语义一致。
+`ObsQueryResult` 含 `events`、`cursor`、可选 `dropped`，与 [AGENTS.md](../../AGENTS.md#design-invariants-ported-from-bb-browser) 的 INV-2 及 [daemon-jsonrpc.md](../../skills/bb-browser/references/daemon-jsonrpc.md#观测类语义) 的 `since` / `cursor` 增量观测语义一致。
 
 ### 观测缓冲清理与网络拦截
 

@@ -40,6 +40,8 @@ bb-browser fetch URL --json                               # 原始 JSON-RPC
 - **`--tab` / `params.tab`**：显式指定。
 
 CLI 不接受 `/api/...`，相对路径只在 JSON-RPC `fetch` 或页面内 `fetch()` 里有效。
+JSON-RPC 和页面内的相对 URL 按该 tab 的 `location.href` 解析。
+绝对 URL 仍要在带该站登录态的 tab 上执行，必要时先 `open` 或 `goto`。
 
 ---
 
