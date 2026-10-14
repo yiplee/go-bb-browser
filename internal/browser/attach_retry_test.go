@@ -237,11 +237,13 @@ func TestFailedAttachDoesNotReleaseReplacedEntry(t *testing.T) {
 }
 
 type failedAttachExecutor struct {
-	t       *testing.T
-	ctx     context.Context
-	calls   []string
-	session target.SessionID
-	err     error
+	t             *testing.T
+	ctx           context.Context
+	calls         []string
+	session       target.SessionID
+	err           error
+	detachStarted chan struct{}
+	detachRelease chan struct{}
 }
 
 func (e *failedAttachExecutor) Execute(ctx context.Context, method string, params, _ any) error {
@@ -264,6 +266,14 @@ func (e *failedAttachExecutor) Execute(ctx context.Context, method string, param
 	}
 	if chromedp.FromContext(e.ctx).Target == nil {
 		e.t.Error("Target cleared before detach completed")
+	}
+	if e.detachStarted != nil {
+		close(e.detachStarted)
+		select {
+		case <-e.detachRelease:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	return e.err
 }
@@ -303,6 +313,81 @@ func TestReleaseFailedAttachOnlyDetaches(t *testing.T) {
 				t.Fatalf("commands = %v, want only Target.detachFromTarget", ex.calls)
 			}
 		})
+	}
+}
+
+// An inert browser lets the real child cancel watcher read Target without
+// launching Chrome. Its CDP commands expire at the watcher's one-second timeout.
+func failedAttachChild(t *testing.T) (context.Context, context.CancelFunc, context.CancelFunc) {
+	t.Helper()
+	parent, cancelParent := context.WithCancel(context.Background())
+	t.Cleanup(cancelParent)
+	browserCtx, stop := chromedp.NewContext(parent)
+	t.Cleanup(stop)
+	chromedp.FromContext(browserCtx).Browser = &chromedp.Browser{}
+	ctx, cancel := chromedp.NewContext(browserCtx)
+	t.Cleanup(cancel)
+	chromedp.FromContext(ctx).Target = &chromedp.Target{TargetID: "USER-TAB", SessionID: "SESSION"}
+	return ctx, cancel, cancelParent
+}
+
+func TestReleaseFailedAttachAlreadyCancelled(t *testing.T) {
+	ctx, cancel, cancelParent := failedAttachChild(t)
+	c := chromedp.FromContext(ctx)
+	attached := c.Target
+	ex := &failedAttachExecutor{t: t, ctx: ctx, session: "SESSION"}
+
+	// Simulate a session disconnect after the child's Target is established.
+	cancelParent()
+	cancelled := 0
+	releaseFailedAttach(ctx, func() {
+		cancelled++
+		cancel() // Wait for the real cancel watcher before inspecting Target.
+	}, ex)
+	if cancelled != 1 || ctx.Err() != context.Canceled {
+		t.Fatalf("cancel calls = %d, context error = %v", cancelled, ctx.Err())
+	}
+	if c.Target != attached {
+		t.Fatal("cleanup changed Target after cancellation")
+	}
+	if len(ex.calls) != 0 {
+		t.Fatalf("commands = %v, want no explicit detach after cancellation", ex.calls)
+	}
+}
+
+func TestReleaseFailedAttachCancelledDuringDetach(t *testing.T) {
+	ctx, cancel, cancelParent := failedAttachChild(t)
+	c := chromedp.FromContext(ctx)
+	attached := c.Target
+	ex := &failedAttachExecutor{
+		t: t, ctx: ctx, session: "SESSION",
+		detachStarted: make(chan struct{}), detachRelease: make(chan struct{}),
+	}
+	var unblock sync.Once
+	releaseDetach := func() { unblock.Do(func() { close(ex.detachRelease) }) }
+	t.Cleanup(releaseDetach)
+	done := make(chan struct{})
+	cancelled := 0
+	go func() {
+		defer close(done)
+		releaseFailedAttach(ctx, func() {
+			cancelled++
+			cancel()
+		}, ex)
+	}()
+	awaitAttachValue(t, ex.detachStarted)
+	// Cancellation starts chromedp's watcher while explicit detach is blocked.
+	cancelParent()
+	releaseDetach()
+	awaitAttachValue(t, done)
+	if cancelled != 1 || ctx.Err() != context.Canceled {
+		t.Fatalf("cancel calls = %d, context error = %v", cancelled, ctx.Err())
+	}
+	if c.Target != attached {
+		t.Fatal("cleanup changed Target after cancellation during detach")
+	}
+	if len(ex.calls) != 1 || ex.calls[0] != target.CommandDetachFromTarget {
+		t.Fatalf("commands = %v, want one explicit Target.detachFromTarget", ex.calls)
 	}
 }
 

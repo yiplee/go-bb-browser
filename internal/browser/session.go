@@ -37,17 +37,26 @@ func browserExecutor(ctx context.Context) cdp.Executor {
 // The caller must own cleanup exclusively: once an entry has been removed by
 // ForgetTarget or CloseTarget, their cancel watcher may already be using Target.
 func releaseFailedAttach(ctx context.Context, cancel context.CancelFunc, ex cdp.Executor) {
+	if ctx.Err() != nil {
+		// Cancellation has handed Target to chromedp's cancel watcher.
+		cancel()
+		return
+	}
 	c := chromedp.FromContext(ctx)
 	if c != nil && c.Target != nil {
-		if id := c.Target.SessionID; id != "" && ex != nil {
-			// Detach even if the attach context has expired. Cleanup is bounded,
-			// and cancellation must still proceed if the browser is unreachable.
+		id := c.Target.SessionID
+		if id != "" && ex != nil {
+			// Cleanup is bounded and can finish if the attach context expires.
 			cleanupCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
 			_ = target.DetachFromTarget().WithSessionID(id).Do(cdp.WithExecutor(cleanupCtx, ex))
 			stop()
 		}
-		// chromedp's cancel watcher otherwise detaches AND closes this target.
-		c.Target = nil
+		if ctx.Err() == nil {
+			// chromedp's cancel watcher otherwise detaches AND closes this target.
+			// If cancellation occurred during detach, the watcher may already be
+			// reading Target, so leave it alone in that case.
+			c.Target = nil
+		}
 	}
 	cancel()
 }
