@@ -2,7 +2,7 @@
 
 用 **Go** 实现的 [bb-browser](https://github.com/epiral/bb-browser) 风格工具链：**CLI（`bb-browser`）→ 本地 HTTP 守护进程（`bb-daemon`）→ 仅通过 CDP 控制已启动的 Google Chrome**。守护进程**不会启动浏览器**，只通过 **chromedp** 附加到你用 `--remote-debugging-port`（等）拉起的 Chrome；**无扩展、不支持其他浏览器**。
 
-详细里程碑与不变量见 [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md)；面向 Agent 的约定见 [`AGENTS.md`](AGENTS.md)。
+面向 Agent 的约定见 [`AGENTS.md`](AGENTS.md)。
 
 ## 构建与测试
 

@@ -8,7 +8,6 @@
 
 ```bash
 bb-browser fetch https://www.reddit.com/api/me.json
-bb-browser fetch /api/me.json                              # 相对当前 tab
 bb-browser fetch URL --method POST --body '{"a":1}'
 bb-browser fetch URL --headers '{"Content-Type":"application/json"}'
 bb-browser fetch URL --output out.json
@@ -39,8 +38,8 @@ bb-browser fetch URL --json                               # 原始 JSON-RPC
 ### 路由到哪个 tab
 
 - **`--tab` / `params.tab`**：显式指定。
-- 相对 URL：依赖**该 tab** 当前页面的 `location` 解析。
-- 绝对 URL：必须在**已有**的、能代表该站点登录态的标签页上操作；需要时可先 `open` 或 `goto` 再 `fetch`。
+
+CLI 不接受 `/api/...`，相对路径只在 JSON-RPC `fetch` 或页面内 `fetch()` 里有效。
 
 ---
 
@@ -55,7 +54,6 @@ CLI：
 ```bash
 bb-browser network requests           # 人类可读摘要行
 bb-browser network requests api       # 位置参数：URL 子串过滤
-bb-browser network requests --filter x
 bb-browser network requests --since 100
 bb-browser network requests --with-body
 bb-browser network clear               # JSON-RPC：network_clear

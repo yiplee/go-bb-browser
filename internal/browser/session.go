@@ -104,7 +104,7 @@ func releaseFailedAttach(ctx context.Context, cleanup *attachCancellation, ex cd
 }
 
 // Session wraps a chromedp remote allocator + browser context for tab-scoped CDP APIs.
-// Only NewRemoteAllocator is used — the daemon never launches Chrome (see IMPLEMENTATION_PLAN §5.1).
+// Only NewRemoteAllocator is used — the daemon never launches Chrome.
 type Session struct {
 	ctx    context.Context
 	cancel context.CancelFunc // cancels chromedp context then allocator
