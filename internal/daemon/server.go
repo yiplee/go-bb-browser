@@ -50,9 +50,15 @@ type Server struct {
 	tabMuOps    sync.Mutex
 	tabCDPLocks map[string]*tabLockEntry
 
-	auditCh   chan store.LogRecord
-	auditDone chan struct{}
-	auditWG   sync.WaitGroup
+	auditMu     sync.Mutex
+	auditClosed bool
+	auditCh     chan store.LogRecord
+	auditDone   chan struct{}
+	auditWG     sync.WaitGroup
+
+	// shutdownTimeout bounds http.Server.Shutdown. Zero uses the default.
+	// A timed-out shutdown gets one more timeout.Operation to drain handlers.
+	shutdownTimeout time.Duration
 
 	// CDP loss triggers fatal exit (supervisor restart) instead of in-process reconnect.
 	fatalOnce sync.Once
@@ -194,12 +200,16 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	s.stopRun = stopRun
 	s.fatalCh = make(chan error, 1)
 
+	defer func() { _ = s.closeAudit() }()
+	// shutdownHTTP drains handlers before the session and audit store are closed.
 	defer func() {
-		if s.store != nil {
-			close(s.auditCh)
-			<-s.auditDone
-			_ = s.store.Close()
+		s.tabMu.Lock()
+		if s.sessDone != nil {
+			s.sessDone()
 		}
+		s.tabLive = nil
+		s.sessDone = nil
+		s.tabMu.Unlock()
 	}()
 
 	if !s.SkipBrowserAttach && s.tabHook == nil {
@@ -209,15 +219,6 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 			return fmt.Errorf("cdp attach: %w", err)
 		}
 		s.tabMu.Unlock()
-		defer func() {
-			s.tabMu.Lock()
-			if s.sessDone != nil {
-				s.sessDone()
-			}
-			s.tabLive = nil
-			s.sessDone = nil
-			s.tabMu.Unlock()
-		}()
 	}
 
 	ln, err := net.Listen("tcp", s.cfg.ListenAddr)
@@ -247,22 +248,57 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		if err := srv.Shutdown(shutdownCtx); err != nil {
+		if err := s.shutdownHTTP(srv); err != nil {
 			return fmt.Errorf("http shutdown: %w", err)
 		}
 		<-errCh
 		return nil
 	case err := <-s.fatalCh:
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
+		_ = s.shutdownHTTP(srv)
 		<-errCh
 		return err
 	case err := <-errCh:
 		return err
 	}
+}
+
+func (s *Server) shutdownHTTP(srv *http.Server) error {
+	budget := s.shutdownTimeout
+	if budget <= 0 {
+		budget = 15 * time.Second
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), budget)
+	err := srv.Shutdown(shutdownCtx)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	shutdownCtx, cancel = context.WithTimeout(context.Background(), timeout.Operation)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		_ = srv.Close()
+		return err
+	}
+	return nil
+}
+
+// closeAudit rejects further channel sends, drains the writer, and closes the store.
+// A handler that loses the race appends synchronously while the file is still open.
+func (s *Server) closeAudit() error {
+	if s.store == nil {
+		return nil
+	}
+	s.auditMu.Lock()
+	if !s.auditClosed {
+		s.auditClosed = true
+		close(s.auditCh)
+	}
+	s.auditMu.Unlock()
+	<-s.auditDone
+	s.auditMu.Lock()
+	err := s.store.Close()
+	s.auditMu.Unlock()
+	return err
 }
 
 func (s *Server) runAuditWriter() {

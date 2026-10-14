@@ -58,9 +58,7 @@ func newAuthTestServerConfig(t *testing.T, cfg Config) (*Server, *fakeConn, *byt
 	fc := &fakeConn{}
 	srv.tabHook = fc
 	t.Cleanup(func() {
-		close(srv.auditCh)
-		<-srv.auditDone
-		if err := srv.store.Close(); err != nil {
+		if err := srv.closeAudit(); err != nil {
 			t.Error(err)
 		}
 	})
