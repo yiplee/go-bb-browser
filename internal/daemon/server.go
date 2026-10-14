@@ -15,7 +15,13 @@ import (
 
 	"github.com/yiplee/go-bb-browser/internal/state"
 	"github.com/yiplee/go-bb-browser/internal/store"
+	"github.com/yiplee/go-bb-browser/internal/timeout"
 	"github.com/yiplee/go-bb-browser/pkg/protocol"
+)
+
+const (
+	readTimeout = 30 * time.Second
+	flushMargin = 15 * time.Second
 )
 
 // Server is the HTTP API front-end for the daemon (JSON-RPC over POST /v1).
@@ -169,6 +175,19 @@ func (s *Server) writeHealthResult(w http.ResponseWriter, result protocol.Health
 	}
 }
 
+func newHTTPServer(handler http.Handler) *http.Server {
+	// net/http arms WriteTimeout when the header read returns, before the
+	// handler reads the body and before handleV1 starts timeout.Operation.
+	// Cover body reading and CDP work, then allow time to flush the response.
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      readTimeout + timeout.Operation + flushMargin,
+		IdleTimeout:       120 * time.Second,
+	}
+}
+
 // ListenAndServe starts the HTTP server until ctx is cancelled or Listen fails.
 func (s *Server) ListenAndServe(ctx context.Context) error {
 	runCtx, stopRun := context.WithCancel(ctx)
@@ -206,13 +225,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		return fmt.Errorf("listen: %w", err)
 	}
 
-	srv := &http.Server{
-		Handler:           s.Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      60 * time.Second,
-		IdleTimeout:       120 * time.Second,
-	}
+	srv := newHTTPServer(s.Handler())
 
 	errCh := make(chan error, 1)
 	go func() {
